@@ -1,4 +1,9 @@
-export const API = import.meta.env.VITE_API_BASE_URL || 'http://192.168.0.119:8000';
+// API address: an explicit build setting wins; otherwise derive it from where the console is served.
+// On Azure, https://tracepay-web.<domain> talks to https://tracepay-api.<domain>; locally, the same host on port 8000.
+const derivedApi = location.hostname.startsWith('tracepay-web.')
+  ? `https://${location.hostname.replace(/^tracepay-web\./, 'tracepay-api.')}`
+  : `${location.protocol}//${location.hostname}:8000`;
+export const API = import.meta.env.VITE_API_BASE_URL || derivedApi;
 
 export async function api(path, options = {}, token) {
   const headers = {...(options.headers || {})};
