@@ -217,8 +217,15 @@ final class TracePaySession: ObservableObject {
     }
 
     private var baseURL: URL {
-        let value = Bundle.main.object(forInfoDictionaryKey: "TRACEPAY_API_BASE_URL") as? String ?? "http://127.0.0.1:8000"
-        return URL(string: value) ?? URL(string: "http://127.0.0.1:8000")!
+        // The build setting is copied into Info.plist. If it is missing, empty or unexpanded,
+        // fall back to the always-on Azure API rather than 127.0.0.1 (which is the phone itself).
+        let fallback = "https://tracepay-api.livelystone-3bd01cb7.centralindia.azurecontainerapps.io"
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "TRACEPAY_API_BASE_URL") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (raw.hasPrefix("http") && !raw.contains("$(")) ? raw : fallback
+        #if DEBUG
+        print("[Trace.Pay] API base URL: \(value)")
+        #endif
+        return URL(string: value) ?? URL(string: fallback)!
     }
 
     private let decoder: JSONDecoder = {
