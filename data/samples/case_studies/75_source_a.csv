@@ -1,0 +1,2 @@
+Txn Ref,Sender Account,Beneficiary,Txn Amount,Txn Date,CCY
+CS75-TX-900,acct.a@tracepay,acct.b@tracepay,"5,000.00",03/10/2026 11:20,INR

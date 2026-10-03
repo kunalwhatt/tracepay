@@ -1,0 +1,28 @@
+# Build the Vite image with VITE_API_BASE_URL set to the API's HTTPS origin.
+name: tracepay-web
+location: eastus
+resourceGroup: REPLACE_RESOURCE_GROUP
+properties:
+  managedEnvironmentId: REPLACE_CONTAINER_APPS_ENVIRONMENT_ID
+  configuration:
+    activeRevisionsMode: single
+    ingress:
+      external: true
+      targetPort: 5173
+      transport: http
+      allowInsecure: false
+  template:
+    containers:
+      - name: web
+        image: REPLACE_ACR.azurecr.io/tracepay-web:2.0.0
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+    scale:
+      minReplicas: 1
+      maxReplicas: 4
+      rules:
+        - name: http-scale
+          http:
+            metadata:
+              concurrentRequests: "100"

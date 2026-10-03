@@ -1,0 +1,62 @@
+name: Test, build and publish Trace.Pay images
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+      - name: Run backend tests (rules-v1, graph, ingestion, case studies)
+        run: cd backend && pytest -q tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build web console
+        run: cd web-console && npm install && npm run build
+
+  build-publish:
+    # Images are published only for version tags or manual runs, and only after tests pass.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Sign in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Build and publish API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ secrets.ACR_LOGIN_SERVER }}/tracepay-api:${{ github.sha }}
+      - name: Build and publish stream-worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.worker
+          push: true
+          tags: ${{ secrets.ACR_LOGIN_SERVER }}/tracepay-worker:${{ github.sha }}
+      - name: Build and publish web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web-console
+          push: true
+          build-args: |
+            VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}
+          tags: ${{ secrets.ACR_LOGIN_SERVER }}/tracepay-web:${{ github.sha }}

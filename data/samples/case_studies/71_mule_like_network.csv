@@ -1,0 +1,16 @@
+Txn Ref,Sender Account,Beneficiary,Txn Amount,Txn Date,CCY
+CS71-0001,victim.v1@okhdfc,tp.a.collect@tracepay,"25,000.00",2026-10-03 09:41,INR
+CS71-0002,victim.v2@okaxis,tp.a.collect@tracepay,"5,800.00",2026-10-03 09:44,INR
+CS71-0003,victim.v3@oksbi,tp.a.collect@tracepay,"7,000.00",2026-10-03 09:48,INR
+CS71-0004,victim.v4@ybl,tp.a.collect@tracepay,"7,700.00",2026-10-03 09:52,INR
+CS71-0005,victim.v5@okicici,tp.a.collect@tracepay,"8,900.00",2026-10-03 09:56,INR
+CS71-0006,victim.v6@paytm,tp.a.collect@tracepay,"3,800.00",2026-10-03 10:00,INR
+CS71-0007,victim.v7@okhdfc,tp.a.collect@tracepay,"5,400.00",2026-10-03 10:04,INR
+CS71-0008,tp.a.collect@tracepay,tp.b.layer@tracepay,"52,000.00",2026-10-03 09:53,INR
+CS71-0009,tp.a.collect@tracepay,tp.c.layer@tracepay,"41,000.00",2026-10-03 09:56,INR
+CS71-0010,tp.a.collect@tracepay,tp.d.layer@tracepay,"36,500.00",2026-10-03 10:00,INR
+CS71-0011,tp.b.layer@tracepay,tp.e.cashout@tracepay,"30,000.00",2026-10-03 10:25,INR
+CS71-0012,tp.b.layer@tracepay,tp.f.cashout@tracepay,"19,500.00",2026-10-03 10:32,INR
+CS71-0013,tp.c.layer@tracepay,tp.e.cashout@tracepay,"38,000.00",2026-10-03 10:44,INR
+CS71-0014,tp.d.layer@tracepay,tp.g.merchant@tracepay,"12,000.00",2026-10-03 11:11,INR
+CS71-0015,tp.e.cashout@tracepay,atm.withdrawal.hyd@bank,"60,000.00",2026-10-03 12:01,INR

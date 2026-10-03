@@ -1,0 +1,65 @@
+# Azure Container Apps YAML template. Replace every placeholder and set secrets out-of-band.
+name: tracepay-api
+location: centralindia  # India region for the Telangana pilot
+resourceGroup: REPLACE_RESOURCE_GROUP
+properties:
+  managedEnvironmentId: REPLACE_CONTAINER_APPS_ENVIRONMENT_ID
+  configuration:
+    activeRevisionsMode: single
+    ingress:
+      external: true
+      targetPort: 8000
+      transport: http
+      allowInsecure: false
+    secrets:
+      - name: database-url
+        value: REPLACE_WITH_SECRET_REFERENCE_OR_VALUE
+      - name: redis-url
+        value: REPLACE_WITH_SECRET_REFERENCE_OR_VALUE
+      - name: jwt-secret
+        value: REPLACE_WITH_SECRET_REFERENCE_OR_VALUE
+      - name: pii-encryption-key
+        value: REPLACE_WITH_SECRET_REFERENCE_OR_VALUE
+  template:
+    containers:
+      - name: api
+        image: REPLACE_ACR.azurecr.io/tracepay-api:REPLACE_COMMIT_SHA  # immutable tag from CI
+        env:
+          - name: DATABASE_URL
+            secretRef: database-url
+          - name: REDIS_URL
+            secretRef: redis-url
+          - name: JWT_SECRET
+            secretRef: jwt-secret
+          - name: PII_ENCRYPTION_KEY
+            secretRef: pii-encryption-key
+          - name: CORS_ORIGINS
+            value: https://REPLACE-WEB-FQDN
+          - name: PRIVATE_PHOTO_DIR
+            value: /var/lib/tracepay/private-photos
+        # Encrypted profile photos must live on shared persistent storage. A container's own disk is
+        # wiped on every restart or new revision, and is not shared between replicas.
+        volumeMounts:
+          - volumeName: private-photos
+            mountPath: /var/lib/tracepay/private-photos
+        probes:
+          - type: Liveness
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+    volumes:
+      - name: private-photos
+        storageType: AzureFile
+        storageName: REPLACE_WITH_CONTAINER_APPS_ENV_STORAGE_NAME  # az containerapp env storage set ...
+    scale:
+      minReplicas: 1
+      # Live events are relayed between replicas through Redis pub/sub (channel tracepay:live),
+      # and photos live on shared Azure Files, so the API can scale out.
+      maxReplicas: 5
+      rules:
+        - name: http-scale
+          http:
+            metadata:
+              concurrentRequests: "80"

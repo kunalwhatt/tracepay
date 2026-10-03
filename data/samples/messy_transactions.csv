@@ -1,0 +1,6 @@
+Txn Ref,Sender Account,Beneficiary,Txn Amount,Txn Date,CCY
+T1001,alice@tracepay,bob@tracepay,"₹1,250.00",2026-09-30 10:12:00,INR
+T1002,bob@tracepay,carol@tracepay,"2,000",30/09/2026 10:20,INR
+T1003,carol@tracepay,dave@tracepay,₹750,2026-09-30T10:25:00+05:30,INR
+T1003,carol@tracepay,dave@tracepay,₹750,2026-09-30T10:25:00+05:30,INR
+T1004,eve@tracepay,frank@tracepay,"1,450.50",2026-10-01 09:02,

@@ -1,0 +1,78 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tracepay}
+      POSTGRES_USER: ${POSTGRES_USER:-tracepay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - tracepay_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tracepay} -d ${POSTGRES_DB:-tracepay}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - tracepay_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tracepay}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-tracepay}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?Set a long random JWT_SECRET in .env}
+      PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://192.168.0.119:5173}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-100}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      GEMINI_ENABLED: ${GEMINI_ENABLED:-true}
+      PRIVATE_PHOTO_DIR: /var/lib/tracepay/private-photos
+    volumes:
+      - tracepay_private_photos:/var/lib/tracepay/private-photos
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+  stream-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tracepay}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-tracepay}
+      EVENT_HUB_CONNECTION_STRING: ${EVENT_HUB_CONNECTION_STRING:-}
+      EVENT_HUB_NAME: ${EVENT_HUB_NAME:-}
+      EVENT_HUB_CONSUMER_GROUP: ${EVENT_HUB_CONSUMER_GROUP:-$Default}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+  web:
+    build:
+      context: ./web-console
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://192.168.0.119:8000}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    restart: unless-stopped
+volumes:
+  tracepay_redis:
+  tracepay_private_photos:
+  tracepay_pg:
