@@ -8,12 +8,12 @@ android {
         // Debug talks to the development Mac over the LAN; cleartext HTTP is allowed only here.
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
-            buildConfigField("String", "TRACEPAY_API_BASE_URL", "\"http://192.168.0.119:8000/\"")
+            buildConfigField("String", "TRACEPAY_API_BASE_URL", "\"https://tracepay-api.livelystone-3bd01cb7.centralindia.azurecontainerapps.io/\"")
         }
         // Release must use the HTTPS production API. Replace the placeholder with your domain.
         getByName("release") {
             manifestPlaceholders["usesCleartextTraffic"] = "false"
-            buildConfigField("String", "TRACEPAY_API_BASE_URL", "\"https://api.tracepay.in/\"")
+            buildConfigField("String", "TRACEPAY_API_BASE_URL", "\"https://tracepay-api.livelystone-3bd01cb7.centralindia.azurecontainerapps.io/\"")
         }
     }
     buildFeatures { compose = true; buildConfig = true }
