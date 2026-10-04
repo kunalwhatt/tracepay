@@ -15,6 +15,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricPrompt
+import android.provider.Settings
+import android.os.Build
+import android.app.KeyguardManager
+import androidx.biometric.BiometricManager
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -83,7 +87,22 @@ private fun money(v:String?)=try{NumberFormat.getCurrencyInstance(Locale("en","I
 
 // BiometricPrompt requires a FragmentActivity (FragmentActivity extends ComponentActivity, so setContent still works).
 class MainActivity: FragmentActivity(){ override fun onCreate(savedInstanceState: Bundle?){super.onCreate(savedInstanceState);setContent{TracePayApp(this)}}
- fun biometric(onSuccess:()->Unit,onError:(String)->Unit={}){val executor=mainExecutor;val prompt=BiometricPrompt(this,executor,object:BiometricPrompt.AuthenticationCallback(){override fun onAuthenticationSucceeded(r:BiometricPrompt.AuthenticationResult){onSuccess()};override fun onAuthenticationError(code:Int,msg:CharSequence){onError(msg.toString())}});prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle("Confirm Trace.Pay payment").setSubtitle("Authorise the internal TraceBank transfer").setNegativeButtonText("Cancel").build())}}
+ /** Confirm a payment with fingerprint / face, or the phone's PIN, pattern or password when no biometric is set up. */
+ fun biometric(onSuccess:()->Unit,onError:(String)->Unit={}){
+  val credential=BiometricManager.Authenticators.DEVICE_CREDENTIAL
+  val allowed=if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.R) BiometricManager.Authenticators.BIOMETRIC_STRONG or credential else BiometricManager.Authenticators.BIOMETRIC_WEAK or credential
+  val keyguard=getSystemService(KeyguardManager::class.java)
+  if(BiometricManager.from(this).canAuthenticate(allowed)!=BiometricManager.BIOMETRIC_SUCCESS&&keyguard?.isDeviceSecure!=true){
+   onError(NO_SCREEN_LOCK_MESSAGE);return}
+  val prompt=BiometricPrompt(this,mainExecutor,object:BiometricPrompt.AuthenticationCallback(){
+   override fun onAuthenticationSucceeded(r:BiometricPrompt.AuthenticationResult){onSuccess()}
+   override fun onAuthenticationError(code:Int,msg:CharSequence){onError(msg.toString())}})
+  prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle("Confirm Trace.Pay payment").setSubtitle("Use your fingerprint, face or screen lock").setAllowedAuthenticators(allowed).build())
+ }
+ fun openScreenLockSettings(){try{startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))}catch(_:Exception){startActivity(Intent(Settings.ACTION_SETTINGS))}}
+}
+
+const val NO_SCREEN_LOCK_MESSAGE="This phone has no screen lock. Set a PIN, pattern or password in Settings to confirm payments."
 
 data class Auth(val access_token:String,val role:String)
 data class Profile(val full_name:String,val vpa_id:String,val gender:String,val selfie_status:String)
@@ -292,14 +311,15 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
       TPCard{Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text("Paying",fontSize=11.sp,color=Muted);Text(recipientName,fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink);Text(recipientVpa,fontSize=11.sp,color=Muted)};Text(money(amount),fontSize=22.sp,fontWeight=FontWeight.ExtraBold,color=Coral)}}}
      ErrorText(message)}
     TPSecondary("Cancel"){reset(true)}
-    TPPrimary("Continue with biometrics"){authorise()}}
+    if(message==NO_SCREEN_LOCK_MESSAGE)TPSecondary("Open screen lock settings"){activity.openScreenLockSettings()}
+    TPPrimary("Confirm with fingerprint or screen lock"){authorise()}}
    PayStage.Authorising->{
     Row{TPChip("CONFIRM")}
     Spacer(Modifier.weight(1f))
     val spin by rememberInfiniteTransition(label="ring").animateFloat(0f,360f,infiniteRepeatable(tween(1400,easing=LinearEasing)),label="spin")
     Box(Modifier.fillMaxWidth(),contentAlignment=Alignment.Center){Box(Modifier.size(190.dp).clip(CircleShape).background(Paper),contentAlignment=Alignment.Center){Icon(Icons.Default.Fingerprint,null,tint=Ink,modifier=Modifier.size(64.dp))};CircularProgressIndicator(progress={0.22f},modifier=Modifier.size(190.dp).rotate(spin),color=Coral,strokeWidth=4.dp,trackColor=Color.Transparent)}
     Text(if(busy)"Confirming with TraceBank…" else "Confirm on your phone",fontSize=26.sp,fontWeight=FontWeight.ExtraBold,color=Ink,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
-    Text("Biometrics confirm ${money(amount)} to $recipientName",fontSize=13.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
+    Text("Use your fingerprint, face or phone PIN to send ${money(amount)} to $recipientName",fontSize=13.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
     Spacer(Modifier.weight(1f))}
    PayStage.Result->{
     val ok=result?.status=="SUCCESS"
@@ -364,7 +384,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
   Text("Profile",fontSize=34.sp,fontWeight=FontWeight.ExtraBold,color=Ink)
   Row(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Coral,Color(0xFF7B57FF))),RoundedCornerShape(26.dp)).padding(18.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(14.dp)){Image(painterResource(R.drawable.tracepay_mark),null,Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)));Column{Text(profile.full_name,fontSize=20.sp,fontWeight=FontWeight.ExtraBold,color=Color.White);Text(profile.vpa_id,fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=Color.White.copy(alpha=.85f))}}
   Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Paper).border(1.dp,Line,RoundedCornerShape(20.dp)).clickable{onShowQr()}.padding(14.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(CoralSoft),contentAlignment=Alignment.Center){Icon(Icons.Default.QrCode,null,tint=Ink)};Text("My QR code",fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink,modifier=Modifier.weight(1f));Text("Receive",fontSize=12.sp,color=Muted)}
-  LockedSetting("Biometrics for payments","Required for every TraceBank payment")
+  LockedSetting("Phone lock for payments","Fingerprint, face or screen lock, every payment")
   LockedSetting("Risk review before paying","Shown before every payment")
   TPCard{InfoLine("Gender",profile.gender);HorizontalDivider(color=Line);InfoLine("Face check",profile.selfie_status.replace('_',' '));HorizontalDivider(color=Line);InfoLine("Account",email.ifBlank{"—"});HorizontalDivider(color=Line);InfoLine("Ledger","TraceBank internal pilot")}
   Info("We never ask for your UPI PIN","Trace.Pay never collects a UPI PIN, OTP or bank password. Biometrics stay on your phone.")
