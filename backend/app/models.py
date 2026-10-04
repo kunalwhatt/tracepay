@@ -174,6 +174,7 @@ class InvestigationCase(Base):
     title: Mapped[str] = mapped_column(String(180))
     status: Mapped[str] = mapped_column(String(24), default="OPEN")
     description: Mapped[str] = mapped_column(Text, default="")
+    account_ref: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

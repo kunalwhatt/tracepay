@@ -239,6 +239,7 @@ def account_summary(ref: str, movements: Iterable[Movement]) -> dict:
             onward.append((m.at - max(prior)).total_seconds() / 60)
     in_total = sum((m.amount for m in incoming), Decimal("0"))
     out_total = sum((m.amount for m in outgoing), Decimal("0"))
+    rules = evaluate_risk(ref, moved, last) if last else None
     return {
         "account": ref,
         "record_count": len(moved), "in_count": len(incoming), "out_count": len(outgoing),
@@ -253,5 +254,89 @@ def account_summary(ref: str, movements: Iterable[Movement]) -> dict:
         "ledger_records": sum(1 for m in moved if m.kind == "ledger"),
         "top_senders": top(in_by), "top_receivers": top(out_by),
         "daily": daily_series(moved, end=last, days=30) if last else [],
-        "rules_at_last_activity": evaluate_risk(ref, moved, last) if last else None,
+        "rules_at_last_activity": rules,
+        **behaviour_profile(ref, moved, incoming, outgoing, last, rules),
     }
+
+
+AMOUNT_BUCKETS = [(Decimal("0"), Decimal("500"), "Under ₹500"), (Decimal("500"), Decimal("2000"), "₹500–2K"),
+                  (Decimal("2000"), Decimal("10000"), "₹2K–10K"), (Decimal("10000"), Decimal("50000"), "₹10K–50K"),
+                  (Decimal("50000"), None, "₹50K+")]
+
+
+def behaviour_profile(ref: str, moved: list[Movement], incoming: list[Movement], outgoing: list[Movement],
+                      last: datetime | None, rules: dict | None) -> dict:
+    """Extra, explainable behaviour measures for the Account Analysis screen."""
+    hourly = [{"hour": h, "in": 0, "out": 0} for h in range(24)]
+    for m in moved:
+        h = m.at.astimezone(REPORTING_TZ).hour
+        hourly[h]["in" if m.receiver == ref else "out"] += 1
+    buckets = []
+    for lo, hi, label in AMOUNT_BUCKETS:
+        buckets.append({"label": label, "in": sum(1 for m in incoming if m.amount >= lo and (hi is None or m.amount < hi)),
+                        "out": sum(1 for m in outgoing if m.amount >= lo and (hi is None or m.amount < hi))})
+    daily_split = []
+    if last:
+        end_day = last.astimezone(REPORTING_TZ).date()
+        days = {(end_day - timedelta(days=o)).isoformat(): {"in": Decimal("0"), "out": Decimal("0"), "in_count": 0, "out_count": 0}
+                for o in range(30)}
+        for m in moved:
+            key = _day_key(m.at)
+            if key in days:
+                side = "in" if m.receiver == ref else "out"
+                days[key][side] += m.amount
+                days[key][side + "_count"] += 1
+        daily_split = [{"date": d, "in": str(v["in"]), "out": str(v["out"]), "in_count": v["in_count"], "out_count": v["out_count"]}
+                       for d, v in sorted(days.items())]
+    parties: dict[str, dict] = {}
+    for m in moved:
+        other = m.sender if m.receiver == ref else m.receiver
+        p = parties.setdefault(other, {"account": other, "received_from_count": 0, "received_from": Decimal("0"),
+                                       "sent_to_count": 0, "sent_to": Decimal("0"), "first": m.at, "last": m.at})
+        if m.receiver == ref:
+            p["received_from_count"] += 1; p["received_from"] += m.amount
+        else:
+            p["sent_to_count"] += 1; p["sent_to"] += m.amount
+        p["first"] = min(p["first"], m.at); p["last"] = max(p["last"], m.at)
+    counterparties = sorted(parties.values(), key=lambda p: -(p["received_from"] + p["sent_to"]))[:20]
+    counterparties = [{**p, "received_from": str(p["received_from"]), "sent_to": str(p["sent_to"]),
+                       "first": p["first"].isoformat(), "last": p["last"].isoformat(),
+                       "both_ways": p["received_from_count"] > 0 and p["sent_to_count"] > 0} for p in counterparties]
+    sources: dict[str, int] = {}
+    for m in moved:
+        key = "TraceBank ledger" if m.kind == "ledger" else (m.provenance.get("source_id") or "unknown source")
+        sources[key] = sources.get(key, 0) + 1
+    rule_table = []
+    if rules:
+        ev = {e["code"]: e for e in rules.get("evidence", [])}
+        window = [m for m in moved if rules["window_start"] <= m.at <= rules["window_end"]]
+        senders = len({m.sender for m in window if m.receiver == ref})
+        receivers = len({m.receiver for m in window if m.sender == ref})
+        rapid = ev.get("RAPID_ONWARD")
+        rule_table = [
+            {"rule": "Inbound breadth", "threshold": f"≥ {BREADTH_THRESHOLD} distinct senders in 24 h", "observed": f"{senders} senders",
+             "triggered": "INBOUND_BREADTH" in ev},
+            {"rule": "Outbound breadth", "threshold": f"≥ {BREADTH_THRESHOLD} distinct recipients in 24 h", "observed": f"{receivers} recipients",
+             "triggered": "OUTBOUND_BREADTH" in ev},
+            {"rule": "Rapid onward movement", "threshold": f"sent within {int(RAPID_ONWARD_WINDOW.total_seconds() // 60)} min of first receipt",
+             "observed": f"{rapid['elapsed_minutes']} min" if rapid else "not observed", "triggered": rapid is not None},
+        ]
+    plain = _plain_summary(ref, incoming, outgoing, parties, rules)
+    return {"hourly": hourly, "amount_buckets": buckets, "daily_split": daily_split, "counterparties": counterparties,
+            "sources": sources, "rule_table": rule_table, "plain_summary": plain}
+
+
+def _plain_summary(ref: str, incoming: list[Movement], outgoing: list[Movement], parties: dict, rules: dict | None) -> str:
+    if not incoming and not outgoing:
+        return f"No transfers involving {ref} are recorded."
+    parts = [f"{ref} received {len(incoming)} transfer{'s' if len(incoming) != 1 else ''} from "
+             f"{len({m.sender for m in incoming})} account(s) and sent {len(outgoing)} to {len({m.receiver for m in outgoing})}."]
+    both = [p for p in parties.values() if p["received_from_count"] and p["sent_to_count"]]
+    if both:
+        parts.append(f"{len(both)} counterpart{'ies' if len(both) != 1 else 'y'} both sent to and received from this account.")
+    if rules:
+        names = {"INBOUND_BREADTH": "many distinct senders", "OUTBOUND_BREADTH": "many distinct recipients", "RAPID_ONWARD": "fast onward movement"}
+        signals = [names[e["code"]] for e in rules.get("evidence", [])]
+        level = rules["level"].replace("_", " ")
+        parts.append(f"At its last activity, rules-v1 says {level}" + (f" because of {', '.join(signals)}." if signals else "."))
+    return " ".join(parts)

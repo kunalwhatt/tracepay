@@ -104,3 +104,13 @@ def test_account_summary_and_burst():
 def test_daily_series_is_data_anchored():
     series = daily_series(mule_network(), end=None, days=7)
     assert len(series) == 7 and series[-1]["date"] == "2026-10-03" and series[-1]["count"] == 11
+
+
+def test_behaviour_profile_is_explainable():
+    s = account_summary("TP-A", mule_network())
+    assert sum(h["in"] + h["out"] for h in s["hourly"]) == 10
+    assert [r["triggered"] for r in s["rule_table"]] == [True, False, True]
+    assert s["rule_table"][0]["observed"] == "7 senders"
+    assert s["counterparties"][0]["account"] in {"TP-B", "V1"} and len(s["counterparties"]) == 10
+    assert "review" in s["plain_summary"] and "fast onward movement" in s["plain_summary"]
+    assert sum(b["in"] for b in s["amount_buckets"]) == 7

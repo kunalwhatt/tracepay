@@ -78,6 +78,9 @@ class IngestionOut(BaseModel):
     conflicts: int = 0
     checksum_sha256: str | None = None
     raw_archived: bool = False
+    skipped: int = 0
+    stages: list[dict] = []
+    sheets: list[dict] = []
 
 
 class PaymentIntentIn(BaseModel):
@@ -99,6 +102,7 @@ class PaymentIntentOut(BaseModel):
 class CaseIn(BaseModel):
     title: str = Field(min_length=2, max_length=180)
     description: str = Field(default="", max_length=4000)
+    account_ref: str | None = Field(default=None, max_length=255)
 
 class CaseOut(BaseModel):
     id: int
@@ -106,6 +110,7 @@ class CaseOut(BaseModel):
     title: str
     status: str
     description: str
+    account_ref: str | None = None
     created_by: int
     created_at: datetime
     updated_at: datetime

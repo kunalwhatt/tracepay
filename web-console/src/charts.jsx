@@ -69,3 +69,30 @@ export function ShareBars({rows}) {
     </div>)}
   </div>;
 }
+
+/** Grouped in/out bars, e.g. hourly activity or amount ranges. rows: [{label, in, out}] (counts or rupees). */
+export function GroupedBars({rows = [], height = 170, valueLabel = v => String(v), labelEvery = 1}) {
+  const [hover, setHover] = useState(null);
+  const max = Math.max(1, ...rows.flatMap(r => [Number(r.in), Number(r.out)]));
+  if (!rows.some(r => Number(r.in) || Number(r.out))) return <div className="chart-empty">No activity in this view.</div>;
+  const W = 640, H = height, padB = 26, padT = 22, gw = W / rows.length, bw = Math.min(16, gw * 0.34);
+  const y = v => padT + (H - padT - padB) * (1 - Number(v) / max);
+  const h = hover != null ? rows[hover] : null;
+  return <div className="chart">
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Money in and out" onMouseLeave={() => setHover(null)}>
+      <line x1="0" x2={W} y1={H - padB} y2={H - padB} stroke="#E9E2FF"/>
+      {rows.map((r, i) => { const cx = i * gw + gw / 2; return <g key={i} onMouseEnter={() => setHover(i)}>
+        <rect x={i * gw} y={0} width={gw} height={H} fill="transparent"/>
+        <rect x={cx - bw - 1} y={y(r.in)} width={bw} height={Math.max(0, H - padB - y(r.in))} rx="3" fill="#5B2EFF" opacity={hover === i ? 1 : 0.85}/>
+        <rect x={cx + 1} y={y(r.out)} width={bw} height={Math.max(0, H - padB - y(r.out))} rx="3" fill="#C6FF3D" stroke="#9fd61f" strokeWidth="0.5"/>
+        {i % labelEvery === 0 && <text x={cx} y={H - 8} textAnchor="middle" className="chart-x">{r.label}</text>}
+      </g>; })}
+      {h && <g className="chart-tip" transform={`translate(${Math.min(W - 80, Math.max(80, hover * gw + gw / 2))},${padT + 6})`} pointerEvents="none">
+        <rect x={-76} y={-18} width={152} height={34} rx={8}/>
+        <text y={-4} textAnchor="middle" className="chart-tip-amt">{h.label}</text>
+        <text y={10} textAnchor="middle">in {valueLabel(h.in)} · out {valueLabel(h.out)}</text>
+      </g>}
+    </svg>
+    <div className="gb-legend"><span><i style={{background: '#5B2EFF'}}/>Money in</span><span><i style={{background: '#C6FF3D'}}/>Money out</span></div>
+  </div>;
+}

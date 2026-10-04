@@ -1,5 +1,6 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {AlertTriangle, ArrowRight, Crosshair, FileCheck2, Maximize2, Network, Pause, Play, Users, ZoomIn, ZoomOut} from 'lucide-react';
+import {AlertTriangle, ArrowRight, CircleHelp, Crosshair, FileCheck2, Maximize2, Network, Pause, Play, Users, ZoomIn, ZoomOut} from 'lucide-react';
+import {openAssistant} from '../assistant.jsx';
 import {api, EVIDENCE, fmtDate, fmtTime, money, moneyCompact, shortId} from '../lib.js';
 import {edgeGeometry, layoutGraph, levelLabel} from './layout.js';
 
@@ -49,7 +50,7 @@ export default function GraphExplorer({token, initialRoot = '', onOpenAccount}) 
 
   return <section className="gx">
     <div className="section-title">
-      <div><div className="eyebrow">TEMPORAL INTELLIGENCE</div><h2>Graph analysis</h2></div>
+      <div><div className="eyebrow">TEMPORAL INTELLIGENCE</div><div className="gx-helps"><button className="text-link" onClick={() => openAssistant('hops')}><CircleHelp size={14}/> What is a hop?</button><button className="text-link" onClick={() => openAssistant('evidence')}><CircleHelp size={14}/> Line colours</button><button className="text-link" onClick={() => openAssistant('risk', {account: graph?.root})}><CircleHelp size={14}/> How risk is flagged</button></div></div>
       <form className="gx-search" onSubmit={e => { e.preventDefault(); trace(); }}>
         <input value={rootInput} onChange={e => setRootInput(e.target.value)} placeholder="Account to trace, e.g. tp.a.collect@tracepay" aria-label="Account to trace"/>
         <div className="gx-hops" role="group" aria-label="Hop limit">

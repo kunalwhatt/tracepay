@@ -1,3 +1,4 @@
+import time
 import csv, io, json, os, secrets
 from datetime import datetime, timezone, date
 from decimal import Decimal, InvalidOperation
@@ -21,11 +22,12 @@ from .schemas import RegisterIn, LoginIn, TokenOut, UserOut, RiskIn, RiskOut, Tr
 from .security import hash_password, verify_password, create_token, renew_token, current_user, require_roles, security as bearer_scheme
 from .engine import assess_recipient, graph_for_account, summarize_account, network_timeseries
 from .ingestion_service import read_upload, deterministic_mapping, normalize_row, sample_for_ai
-from .gemini_service import suggest_mapping, enabled as gemini_enabled
+from .gemini_service import suggest_mapping, enabled as gemini_enabled, status as gemini_status
+from . import schema_agent, assistant as tp_assistant
 from .blob_service import upload_raw as upload_raw_blob
 from .ids import normalize_tracepay_id
 
-APP_VERSION = "4.4.0"
+APP_VERSION = "4.5.0"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
@@ -292,6 +294,7 @@ def startup():
             "ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_start TIMESTAMPTZ",
             "ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_end TIMESTAMPTZ",
             "ALTER TABLE pilot_transfers ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE investigation_cases ADD COLUMN IF NOT EXISTS account_ref VARCHAR(255)",
         ):
             conn.execute(text(statement))
     Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos")).mkdir(parents=True, exist_ok=True)
@@ -345,7 +348,8 @@ def list_cases(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_
 
 @app.post("/api/v1/cases", response_model=CaseOut, status_code=201)
 def create_case(body: CaseIn, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
-    case = InvestigationCase(case_ref="CASE-" + uuid4().hex[:12].upper(), title=body.title.strip(), description=body.description.strip(), created_by=user.id)
+    case = InvestigationCase(case_ref="CASE-" + uuid4().hex[:12].upper(), title=body.title.strip(), description=body.description.strip(),
+                             account_ref=(body.account_ref or "").strip() or None, created_by=user.id)
     db.add(case); db.flush(); db.add(AuditEvent(actor_user_id=user.id, action="case.created", object_ref=case.case_ref)); db.commit(); db.refresh(case); return case
 
 @app.get("/api/v1/reports", response_model=list[ReportOut])
@@ -356,6 +360,120 @@ def list_reports(limit: int = Query(100, ge=1, le=500), db: Session = Depends(ge
 def create_report(body: ReportIn, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
     report = InvestigationReport(report_ref="RPT-" + uuid4().hex[:12].upper(), title=body.title.strip(), report_type=body.report_type.strip(), case_ref=body.case_ref.strip() if body.case_ref else None, body=body.body, created_by=user.id)
     db.add(report); db.flush(); db.add(AuditEvent(actor_user_id=user.id, action="report.created", object_ref=report.report_ref)); db.commit(); db.refresh(report); return report
+
+class ReportGenerateIn(BaseModel):
+    account_ref: str = Field(min_length=2, max_length=255)
+    title: str | None = Field(default=None, max_length=180)
+    case_ref: str | None = Field(default=None, max_length=40)
+    hops: int = Field(default=2, ge=1, le=4)
+    include_ai_summary: bool = False
+
+
+@app.post("/api/v1/reports/generate", response_model=ReportOut, status_code=201)
+def generate_report(body: ReportGenerateIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    """Build an evidence report from persisted records for one account and store it."""
+    account = body.account_ref.strip()
+    content = tp_assistant.build_report(db, account, hops=body.hops, include_ai_summary=body.include_ai_summary)
+    if not content["transactions"] and not content["ledger_transfers"]:
+        raise HTTPException(404, f"No records mention {account}. Check the account reference.")
+    report = InvestigationReport(report_ref="RPT-" + uuid4().hex[:12].upper(), title=(body.title or f"Evidence report: {account}").strip()[:180],
+                                 report_type="account_evidence", status="FINAL", case_ref=body.case_ref, body=json.dumps(content, default=str),
+                                 created_by=user.id)
+    db.add(report); db.flush()
+    db.add(AuditEvent(actor_user_id=user.id, action="report.generated", object_ref=report.report_ref, detail=json.dumps({"account": account})))
+    db.commit(); db.refresh(report)
+    return report
+
+
+@app.get("/api/v1/reports/{report_id}", response_model=ReportOut)
+def get_report(report_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    report = db.get(InvestigationReport, report_id)
+    if not report:
+        raise HTTPException(404, "Report not found")
+    return report
+
+
+@app.delete("/api/v1/reports/{report_id}", status_code=204)
+def delete_report(report_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+    report = db.get(InvestigationReport, report_id)
+    if not report:
+        raise HTTPException(404, "Report not found")
+    db.add(AuditEvent(actor_user_id=user.id, action="report.deleted", object_ref=report.report_ref))
+    db.delete(report); db.commit()
+
+
+class CaseUpdateIn(BaseModel):
+    status: str | None = Field(default=None, pattern="^(OPEN|IN_REVIEW|CLOSED)$")
+    description: str | None = Field(default=None, max_length=4000)
+    account_ref: str | None = Field(default=None, max_length=255)
+
+
+@app.patch("/api/v1/cases/{case_id}", response_model=CaseOut)
+def update_case(case_id: int, body: CaseUpdateIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    case = db.get(InvestigationCase, case_id)
+    if not case:
+        raise HTTPException(404, "Case not found")
+    for field in ("status", "description", "account_ref"):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(case, field, value.strip() if isinstance(value, str) else value)
+    db.add(AuditEvent(actor_user_id=user.id, action="case.updated", object_ref=case.case_ref, detail=body.model_dump_json(exclude_none=True)))
+    db.commit(); db.refresh(case)
+    return case
+
+
+class AssistantIn(BaseModel):
+    question: str = Field(min_length=2, max_length=1000)
+    account_ref: str | None = Field(default=None, max_length=255)
+    screen: str | None = Field(default=None, max_length=60)
+
+
+@app.get("/api/v1/assistant/topics")
+def assistant_topics(user: User = Depends(require_roles(*OPS_ROLES))):
+    return {"topics": tp_assistant.TOPICS, "gemini": gemini_status()}
+
+
+@app.post("/api/v1/assistant/ask")
+def assistant_ask(body: AssistantIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    return tp_assistant.ask(db, body.question.strip(), (body.account_ref or "").strip() or None, body.screen)
+
+
+@app.get("/api/v1/system/gemini")
+def system_gemini(user: User = Depends(require_roles(*OPS_ROLES))):
+    """Check the Gemini configuration with a tiny live request."""
+    from .gemini_service import generate_json
+    info = gemini_status()
+    if info["enabled"]:
+        probe = generate_json('Reply with JSON only: {"ok": true}')
+        info.update({"reachable": probe["ok"], "model_used": probe.get("model"), "error": probe.get("error")})
+    return info
+
+
+class ResetIn(BaseModel):
+    scope: str = Field(pattern="^(ingested|investigation)$")
+    confirm: str
+
+
+@app.post("/api/v1/admin/reset")
+async def reset_data(body: ResetIn, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    """Delete imported evidence (and optionally cases and reports). Users, wallets and the TraceBank ledger are kept."""
+    if body.confirm != "RESET":
+        raise HTTPException(400, 'Type RESET to confirm.')
+    from sqlalchemy import delete as sql_delete
+    counts = {}
+    counts["conflicts"] = db.execute(sql_delete(SourceConflict)).rowcount
+    counts["transactions"] = db.execute(sql_delete(Transaction)).rowcount
+    counts["ingestion_jobs"] = db.execute(sql_delete(IngestionJob)).rowcount
+    referenced = select(PaymentIntent.assessment_id)
+    counts["risk_assessments"] = db.execute(sql_delete(RiskAssessment).where(RiskAssessment.id.not_in(referenced))).rowcount
+    if body.scope == "investigation":
+        counts["reports"] = db.execute(sql_delete(InvestigationReport)).rowcount
+        counts["cases"] = db.execute(sql_delete(InvestigationCase)).rowcount
+    db.add(AuditEvent(actor_user_id=user.id, action="admin.reset", object_ref=body.scope, detail=json.dumps(counts)))
+    db.commit()
+    await hub.publish({"type": "ingestion.completed", "reset": True})
+    return {"scope": body.scope, "deleted": counts, "kept": ["users", "profiles", "wallets", "TraceBank ledger", "audit log"]}
+
 
 @app.get("/api/v1/transactions", response_model=list[TransactionOut])
 def transactions(limit: int = Query(100, ge=1, le=500), account_ref: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
@@ -579,46 +697,29 @@ def _record_conflict(db: Session, job: IngestionJob, normalized, existing: Trans
     return ", ".join(differing)
 
 
-def _ingest_frames(db: Session, job: IngestionJob, sheets: dict, *, use_gemini: bool) -> dict:
+def _ingest_frames(db: Session, job: IngestionJob, sheets: dict, plans: dict[str, dict]) -> dict:
+    """Validate, deduplicate and persist rows using the per-sheet plans from the schema agent."""
     errors: list[str] = []
-    counts = {"received": 0, "accepted": 0, "rejected": 0, "duplicates": 0, "conflicts": 0}
-    ai_used = False
-    ai_warnings: list[str] = []
+    counts = {"received": 0, "accepted": 0, "rejected": 0, "duplicates": 0, "conflicts": 0, "skipped": 0}
     occurrences: dict[str, int] = {}
-    for sheet_name, frame in sheets.items():
-        frame = frame.copy()
-        frame.columns = [str(c).strip() for c in frame.columns]
-        columns = list(frame.columns)
-        mapping = deterministic_mapping(columns)
-        if not REQUIRED_FIELDS.issubset(mapping) and use_gemini and gemini_enabled():
-            try:
-                ai = suggest_mapping(columns, sample_for_ai(frame))
-                proposed = ai.get("mapping") or {}
-                taken = set(mapping.values())
-                safe = {}
-                for field_name, column in proposed.items():
-                    # Only fill gaps, only with real columns, and never reuse a column for two fields.
-                    if field_name in MAPPABLE_FIELDS and field_name not in mapping and column in columns and column not in taken:
-                        safe[field_name] = column; taken.add(column)
-                mapping.update(safe)
-                ai_used = ai_used or bool(safe)
-                ai_warnings.extend([str(x) for x in (ai.get("warnings") or [])][:10])
-            except Exception as exc:
-                ai_warnings.append(f"Gemini mapping unavailable for sheet {sheet_name}: {type(exc).__name__}")
-        if not REQUIRED_FIELDS.issubset(mapping):
-            missing = ", ".join(sorted(REQUIRED_FIELDS - set(mapping)))
-            errors.append(f"Sheet {sheet_name}: could not map required fields: {missing}")
-            counts["rejected"] += len(frame); counts["received"] += len(frame)
+    for sheet_name, info in sheets.items():
+        frame, plan = info["frame"], plans[sheet_name]
+        if not plan.get("ready"):
+            counts["received"] += len(frame); counts["rejected"] += len(frame)
+            errors.append(f"Sheet {sheet_name}: not imported. Missing: {', '.join(plan.get('missing') or ['a recognisable layout'])}")
             continue
-
-        for row_no, (_, row) in enumerate(frame.iterrows(), start=2):
-            counts["received"] += 1
+        for offset, (_, row) in enumerate(frame.iterrows()):
+            row_no = info["header_row"] + 2 + offset
             try:
-                normalized = normalize_row(row.to_dict(), mapping, row_no, sheet_name, occurrences)
+                normalized = schema_agent.normalize_with_plan(row.to_dict(), plan, row_no, sheet_name, occurrences)
             except (ValueError, InvalidOperation, TypeError, KeyError) as exc:
-                counts["rejected"] += 1
+                counts["received"] += 1; counts["rejected"] += 1
                 if len(errors) < 200: errors.append(f"{sheet_name} row {row_no}: {str(exc)[:220]}")
                 continue
+            if normalized is None:
+                counts["skipped"] += 1
+                continue
+            counts["received"] += 1
             tx = Transaction(
                 transaction_ref=normalized.transaction_id, event_id=normalized.event_id,
                 sender_id=normalized.sender_id, receiver_id=normalized.receiver_id, amount=normalized.amount,
@@ -640,52 +741,129 @@ def _ingest_frames(db: Session, job: IngestionJob, sheets: dict, *, use_gemini: 
                 else:
                     counts["duplicates"] += 1
             except Exception as exc:
-                counts["rejected"] += 1
+                counts["received"] += 1; counts["rejected"] += 1
                 if len(errors) < 200: errors.append(f"{sheet_name} row {row_no}: invalid record ({type(exc).__name__})")
-    if ai_warnings:
-        errors.extend([f"AI: {x}" for x in ai_warnings[:20]])
-    return {**counts, "errors": errors, "ai_used": ai_used}
+    return {**counts, "errors": errors}
 
 
-async def _run_ingestion(db: Session, user: User, *, filename: str, raw: bytes, content_type: str | None,
-                         source_id: str, use_gemini: bool) -> IngestionOut:
-    source = (source_id.strip() or Path(filename).stem)[:255]
-    checksum = hashlib.sha256(raw).hexdigest()
+def _plans_for(sheets: dict, filename: str, *, use_gemini: bool, statement_account: str, requested: dict | None) -> dict[str, dict]:
+    plans = {}
+    for name, info in sheets.items():
+        base = schema_agent.build_plan(name, info, filename, use_gemini=use_gemini, statement_account=statement_account)
+        wanted = (requested or {}).get(name)
+        plans[name] = schema_agent.plan_from_request(wanted, [str(c) for c in info["frame"].columns], base) if wanted else base
+    return plans
+
+
+def _read_sheets(filename: str, raw: bytes) -> dict:
     try:
-        sheets = read_upload(filename, raw)
+        sheets = schema_agent.load_sheets(filename, raw)
     except Exception as exc:
         raise HTTPException(400, f"Could not read dataset: {exc}") from exc
     if not sheets:
         raise HTTPException(400, "The uploaded dataset contains no non-empty sheets/rows")
+    return sheets
+
+
+async def _read_upload_limited(file: UploadFile) -> bytes:
+    max_bytes = int(os.getenv("UPLOAD_MAX_MB", "100")) * 1024 * 1024
+    raw = await file.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise HTTPException(413, f"Upload exceeds configured size limit of {max_bytes // 1024 // 1024} MB")
+    if not raw:
+        raise HTTPException(400, "Empty upload")
+    return raw
+
+
+def _plan_view(plan: dict) -> dict:
+    keys = ("sheet", "mode", "mapping", "source", "missing", "ready", "statement_account", "statement_account_source",
+            "notes", "warnings", "gemini", "timings")
+    return {k: plan.get(k) for k in keys}
+
+
+@app.post("/api/v1/ingestion/preview")
+async def ingestion_preview(
+    file: UploadFile = File(...), use_gemini: bool = Form(True), statement_account: str = Form(""),
+    plan: str = Form(""), user: User = Depends(require_roles("admin", "analyst")),
+):
+    """Read the file and propose how to import it, without saving anything.
+
+    Returns, per sheet: the detected header row, column profile, the plan (mode, field → column, which of
+    rules / Gemini / you chose each mapping, what is missing) and the first rows normalised with that plan.
+    """
+    stages = []
+    t0 = time.perf_counter()
+    raw = await _read_upload_limited(file)
+    filename = (file.filename or "upload").strip() or "upload"
+    sheets = _read_sheets(filename, raw)
+    stages.append({"key": "read", "ms": round((time.perf_counter() - t0) * 1000, 1),
+                   "detail": f"{len(sheets)} sheet(s), {sum(len(i['frame']) for i in sheets.values())} data rows"})
+    t1 = time.perf_counter()
+    requested = json.loads(plan).get("sheets") if plan else None
+    plans = _plans_for(sheets, filename, use_gemini=use_gemini, statement_account=statement_account, requested=requested)
+    stages.append({"key": "plan", "ms": round((time.perf_counter() - t1) * 1000, 1),
+                   "detail": ", ".join(f"{n}: {p.get('mode') or 'unknown layout'}" for n, p in plans.items())})
+    out = []
+    for name, info in sheets.items():
+        p = plans[name]
+        out.append({"name": name, "rows": len(info["frame"]), "header_row": info["header_row"] + 1,
+                    "preamble": info["preamble"][:400], "columns": schema_agent.profile_columns(info["frame"]),
+                    "plan": _plan_view(p), "sample": schema_agent.preview_rows(info["frame"], p, name, info["header_row"])})
+    return {"filename": filename, "size_bytes": len(raw), "sheets": out, "stages": stages, "fields": schema_agent.FIELD_HELP,
+            "gemini": gemini_status()}
+
+
+async def _run_ingestion(db: Session, user: User, *, filename: str, raw: bytes, content_type: str | None,
+                         source_id: str, use_gemini: bool, statement_account: str = "", plan: dict | None = None) -> IngestionOut:
+    stages = []
+    source = (source_id.strip() or Path(filename).stem)[:255]
+    checksum = hashlib.sha256(raw).hexdigest()
+    t0 = time.perf_counter()
+    sheets = _read_sheets(filename, raw)
+    stages.append({"key": "read", "ms": round((time.perf_counter() - t0) * 1000, 1), "detail": f"{len(sheets)} sheet(s)"})
+    t1 = time.perf_counter()
+    plans = _plans_for(sheets, filename, use_gemini=use_gemini, statement_account=statement_account,
+                       requested=(plan or {}).get("sheets"))
+    stages.append({"key": "plan", "ms": round((time.perf_counter() - t1) * 1000, 1),
+                   "detail": ", ".join(f"{n}: {p.get('mode') or 'unknown'}" for n, p in plans.items())})
+    t2 = time.perf_counter()
     raw_blob_url = None
     try:
         raw_blob_url = upload_raw_blob(filename, raw, content_type)
     except Exception as exc:
-        # Raw archival is optional; ingestion must remain functional if Blob is temporarily unavailable.
         print(f"[blob] archival upload failed: {type(exc).__name__}: {exc}", flush=True)
+    stages.append({"key": "archive", "ms": round((time.perf_counter() - t2) * 1000, 1),
+                   "detail": "raw file archived to Blob storage" if raw_blob_url else "archive skipped (Blob not configured)"})
 
     job = IngestionJob(source_id=source, status="processing", filename=filename[:255], checksum_sha256=checksum, raw_blob_url=raw_blob_url)
     db.add(job); db.commit(); db.refresh(job)
-    result = _ingest_frames(db, job, sheets, use_gemini=use_gemini)
+    t3 = time.perf_counter()
+    result = _ingest_frames(db, job, sheets, plans)
     job.received, job.accepted, job.rejected = result["received"], result["accepted"], result["rejected"]
     job.duplicates, job.conflicts = result["duplicates"], result["conflicts"]
     job.errors_json = json.dumps(result["errors"])
     job.status = "completed" if result["rejected"] == 0 and result["conflicts"] == 0 else ("completed_with_errors" if result["accepted"] else "failed")
     job.completed_at = datetime.now(timezone.utc)
     db.commit()
+    stages.append({"key": "validate", "ms": round((time.perf_counter() - t3) * 1000, 1),
+                   "detail": f"{result['received']} rows checked, {result['rejected']} rejected, {result['skipped']} blank/summary rows skipped"})
+    stages.append({"key": "dedupe", "ms": 0, "detail": f"{result['duplicates']} duplicates, {result['conflicts']} conflicts"})
+    stages.append({"key": "save", "ms": 0, "detail": f"{result['accepted']} records saved with file/sheet/row provenance"})
 
+    ai_used = any(p.get("gemini", {}).get("used") for p in plans.values())
     event = activity_event(
         db, actor_user_id=user.id, event_type="ingestion.completed", object_ref=str(job.id),
         details={"source_id": source, "filename": filename, "checksum_sha256": checksum, "accepted": job.accepted,
                  "rejected": job.rejected, "duplicates": job.duplicates, "conflicts": job.conflicts, "sheets": len(sheets),
-                 "gemini_mapping_used": result["ai_used"], "raw_blob_archived": bool(raw_blob_url)})
+                 "modes": {n: p.get("mode") for n, p in plans.items()}, "gemini_mapping_used": ai_used, "raw_blob_archived": bool(raw_blob_url)})
     await hub.publish({"type": "ingestion.completed", "job_id": job.id, "accepted": job.accepted, "rejected": job.rejected,
-                       "duplicates": job.duplicates, "conflicts": job.conflicts, "gemini_mapping_used": result["ai_used"]})
+                       "duplicates": job.duplicates, "conflicts": job.conflicts, "gemini_mapping_used": ai_used})
     await hub.publish({"type": "activity", "id": event.id, "event_type": event.action, "object_ref": event.object_ref,
                        "actor_user_id": user.id, "details": json.loads(event.detail), "created_at": event.created_at.isoformat()})
     return IngestionOut(job_id=job.id, status=job.status, received=job.received, accepted=job.accepted, rejected=job.rejected,
                         duplicates=job.duplicates, conflicts=job.conflicts, errors=result["errors"][:200],
-                        checksum_sha256=checksum, raw_archived=bool(raw_blob_url))
+                        checksum_sha256=checksum, raw_archived=bool(raw_blob_url), skipped=result["skipped"], stages=stages,
+                        sheets=[_plan_view(p) for p in plans.values()])
 
 
 @app.post("/api/v1/ingestion/file", response_model=IngestionOut)
@@ -693,22 +871,22 @@ async def ingest_file(
     file: UploadFile = File(...),
     source_id: str = Form(""),
     use_gemini: bool = Form(True),
+    statement_account: str = Form(""),
+    plan: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    """Ingest CSV/TXT/XLS/XLSX/XLSM files with deterministic normalization plus optional Gemini-assisted column mapping.
+    """Import CSV/TXT/TSV/XLS/XLSX/XLSM transfer files or bank/UPI statements.
 
-    Gemini may suggest column mappings, but it is never allowed to invent transaction values.
-    The deterministic validator remains authoritative before a row reaches PostgreSQL.
-    Every accepted row records its ingestion job, file, sheet and row number.
+    ``plan`` is the (optionally edited) plan from /ingestion/preview as JSON: {"sheets": {name: {mode, mapping,
+    statement_account}}}. Without it the schema agent plans automatically. Gemini may propose column mappings;
+    it never supplies values, and the deterministic validator decides what reaches PostgreSQL.
     """
-    max_bytes = int(os.getenv("UPLOAD_MAX_MB", "100")) * 1024 * 1024
-    raw = await file.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise HTTPException(413, f"Upload exceeds configured size limit of {max_bytes // 1024 // 1024} MB")
+    raw = await _read_upload_limited(file)
     filename = (file.filename or "upload").strip() or "upload"
-    return await _run_ingestion(db, user, filename=filename, raw=raw, content_type=file.content_type,
-                                source_id=source_id, use_gemini=use_gemini)
+    requested = json.loads(plan) if plan else None
+    return await _run_ingestion(db, user, filename=filename, raw=raw, content_type=file.content_type, source_id=source_id,
+                                use_gemini=use_gemini, statement_account=statement_account, plan=requested)
 
 
 @app.post("/api/v1/ingestion/csv", response_model=IngestionOut)
@@ -910,6 +1088,30 @@ async def create_pilot_merchant(body: MerchantIn, db: Session = Depends(get_db),
     return {"id": merchant.id, "display_name": merchant.display_name, "vpa_id": merchant.vpa_id, "category": merchant.category,
         "location": merchant.location, "status": merchant.status, "created_at": merchant.created_at.isoformat()}
 
+_local_transfer_hits: dict[int, list[float]] = {}
+
+
+def allow_pilot_transfer(user_id: int, limit: int = 20, window: int = 60) -> bool:
+    """Per-user transfer rate limit (20 per minute).
+
+    Uses Redis when available so every API replica shares one count. Without Redis (a single-replica
+    pilot), it falls back to an in-process sliding window instead of refusing all payments.
+    """
+    key = f"tracepay:pilot-transfer-rate:{user_id}"
+    try:
+        count = redis_client.incr(key)
+        if count == 1:
+            redis_client.expire(key, window)
+        return count <= limit
+    except redis.RedisError:
+        import time
+        now = time.monotonic()
+        hits = [t for t in _local_transfer_hits.get(user_id, []) if now - t < window]
+        hits.append(now)
+        _local_transfer_hits[user_id] = hits
+        return len(hits) <= limit
+
+
 @app.post("/api/v1/pilot/transfers", status_code=201)
 async def create_pilot_transfer(body: PilotTransferIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
     profile = db.scalar(select(PilotProfile).where(PilotProfile.user_id == user.id))
@@ -917,12 +1119,8 @@ async def create_pilot_transfer(body: PilotTransferIn, db: Session = Depends(get
     if profile.vpa_id == body.receiver_vpa: raise HTTPException(400, "Choose a different recipient")
     receiver_exists = db.scalar(select(PilotProfile.id).where(PilotProfile.vpa_id == body.receiver_vpa)) or db.scalar(select(PilotMerchant.id).where(PilotMerchant.vpa_id == body.receiver_vpa))
     if not receiver_exists: raise HTTPException(404, "Recipient is not a registered Trace.Pay account")
-    try:
-        count = redis_client.incr(f"tracepay:pilot-transfer-rate:{user.id}")
-        if count == 1: redis_client.expire(f"tracepay:pilot-transfer-rate:{user.id}", 60)
-        if count > 20: raise HTTPException(429, "Pilot transfer rate limit reached. Try again in a minute.")
-    except redis.RedisError:
-        raise HTTPException(503, "Pilot safety service is temporarily unavailable. Please retry shortly.")
+    if not allow_pilot_transfer(user.id):
+        raise HTTPException(429, "Pilot transfer rate limit reached. Try again in a minute.")
     try:
         transfer = execute_ledger_transfer(db, sender_vpa=profile.vpa_id, receiver_vpa=body.receiver_vpa,
             amount=body.amount, note=body.note, sender_user_id=user.id, idempotency_key=body.idempotency_key, actor_user_id=user.id)
