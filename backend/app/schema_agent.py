@@ -312,7 +312,7 @@ def build_plan(sheet: str, info: dict[str, Any], filename: str, *, use_gemini: b
         samples = [{c: clean_text(v) for c, v in row.items()} for row in frame.head(8).to_dict("records")]
         ai = gemini_service.suggest_plan(columns, samples, info.get("preamble", ""), filename, FIELD_HELP)
         plan["timings"]["gemini_ms"] = round((time.perf_counter() - started) * 1000, 1)
-        plan["gemini"] = {"enabled": True, "used": ai.get("ok", False), "model": ai.get("model"), "error": ai.get("error")}
+        plan["gemini"] = {"enabled": True, "used": ai.get("ok", False), "model": ai.get("model"), "provider": ai.get("provider"), "error": ai.get("error")}
         if ai.get("ok"):
             for field, col in ai.get("mapping", {}).items():
                 if field in FIELD_HELP and field not in mapping and col in columns and col not in mapping.values():

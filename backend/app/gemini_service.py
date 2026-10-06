@@ -1,4 +1,8 @@
-"""Gemini integration for Trace.Pay.
+"""AI integration for Trace.Pay (Claude API and Gemini).
+
+Providers: Claude (ANTHROPIC_API_KEY, CLAUDE_MODEL) and Gemini (GEMINI_API_KEY, GEMINI_MODEL).
+AI_PROVIDER=auto (default) tries Claude first when its key is set, then Gemini; "claude" or "gemini"
+uses only that provider. The module keeps its historical name so existing imports keep working.
 
 Gemini is used in two places, both strictly bounded:
 
@@ -23,24 +27,54 @@ except Exception as exc:  # pragma: no cover
     genai = None
     GEMINI_IMPORT_ERROR = exc
 
-FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
+try:
+    import anthropic
+    ANTHROPIC_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover
+    anthropic = None
+    ANTHROPIC_IMPORT_ERROR = exc
+
+CLAUDE_FALLBACK_MODELS = ["claude-haiku-4-5-20251001", "claude-sonnet-5-5"]
+FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+TRANSIENT = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "overloaded", "high demand")
 
 
-def enabled() -> bool:
+def _gemini_enabled() -> bool:
     return bool(os.getenv("GEMINI_API_KEY", "").strip()) and os.getenv("GEMINI_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 
 
-def status() -> dict[str, Any]:
-    return {"enabled": enabled(), "sdk_available": genai is not None, "model": os.getenv("GEMINI_MODEL", "") or FALLBACK_MODELS[0]}
+def _claude_enabled() -> bool:
+    return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
 
 
-def _models() -> list[str]:
-    preferred = os.getenv("GEMINI_MODEL", "").strip()
+def providers() -> list[str]:
+    choice = os.getenv("AI_PROVIDER", "auto").strip().lower()
+    available = [p for p, ok in (("claude", _claude_enabled()), ("gemini", _gemini_enabled())) if ok]
+    if choice in ("claude", "gemini"):
+        return [choice] if choice in available else []
+    return available
+
+
+def enabled() -> bool:
+    return bool(providers())
+
+
+def _models(provider: str = "gemini") -> list[str]:
+    preferred = os.getenv("CLAUDE_MODEL" if provider == "claude" else "GEMINI_MODEL", "").strip()
+    fallbacks = CLAUDE_FALLBACK_MODELS if provider == "claude" else FALLBACK_MODELS
     seen, out = set(), []
-    for m in ([preferred] if preferred else []) + FALLBACK_MODELS:
+    for m in ([preferred] if preferred else []) + fallbacks:
         if m and m not in seen:
             seen.add(m); out.append(m)
     return out
+
+
+def status() -> dict[str, Any]:
+    order = providers()
+    first = order[0] if order else None
+    return {"enabled": bool(order), "provider": first, "providers": order,
+            "model": _models(first)[0] if first else None,
+            "sdk_available": {"claude": anthropic is not None, "gemini": genai is not None}}
 
 
 def _parse_json(text: str) -> Any:
@@ -55,25 +89,71 @@ def _parse_json(text: str) -> Any:
         raise
 
 
-def generate_json(prompt: str) -> dict[str, Any]:
-    """Ask Gemini for a JSON object. Returns {"ok", "data", "model", "error"}."""
-    if not enabled():
-        return {"ok": False, "error": "Gemini is not configured (set GEMINI_API_KEY and GEMINI_ENABLED=true)."}
+def _gemini_json(prompt: str) -> dict[str, Any]:
     if genai is None:
         return {"ok": False, "error": f"google-genai is not installed: {GEMINI_IMPORT_ERROR}"}
+    import time
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     errors = []
-    for model in _models():
-        try:
-            response = client.models.generate_content(model=model, contents=prompt,
-                                                      config={"response_mime_type": "application/json", "temperature": 0.1})
-            data = _parse_json(response.text)
-            if not isinstance(data, dict):
-                raise ValueError("response was not a JSON object")
-            return {"ok": True, "data": data, "model": model}
-        except Exception as exc:  # noqa: BLE001 - reported to the caller
-            errors.append(f"{model}: {type(exc).__name__}: {str(exc)[:160]}")
+    for model in _models("gemini"):
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(model=model, contents=prompt,
+                                                          config={"response_mime_type": "application/json", "temperature": 0.1})
+                data = _parse_json(response.text)
+                if not isinstance(data, dict):
+                    raise ValueError("response was not a JSON object")
+                return {"ok": True, "data": data, "model": model}
+            except Exception as exc:  # noqa: BLE001
+                message = str(exc)
+                transient = any(t in message for t in TRANSIENT)
+                if transient and attempt == 0:
+                    time.sleep(1.5); continue
+                errors.append(f"{model}: {'busy' if transient else type(exc).__name__}: {message[:120]}")
+                break
     return {"ok": False, "error": " | ".join(errors)}
+
+
+def _claude_json(prompt: str) -> dict[str, Any]:
+    if anthropic is None:
+        return {"ok": False, "error": f"anthropic SDK is not installed: {ANTHROPIC_IMPORT_ERROR}"}
+    import time
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    errors = []
+    for model in _models("claude"):
+        for attempt in range(2):
+            try:
+                response = client.messages.create(
+                    model=model, max_tokens=2048, temperature=0.1,
+                    system="You are a component of the Trace.Pay system. Reply with one JSON object only, no prose and no code fences.",
+                    messages=[{"role": "user", "content": prompt}])
+                text = "".join(getattr(block, "text", "") for block in response.content)
+                data = _parse_json(text)
+                if not isinstance(data, dict):
+                    raise ValueError("response was not a JSON object")
+                return {"ok": True, "data": data, "model": model}
+            except Exception as exc:  # noqa: BLE001
+                message = str(exc)
+                transient = any(t in message for t in TRANSIENT + ("529", "overloaded_error", "Overloaded"))
+                if transient and attempt == 0:
+                    time.sleep(1.5); continue
+                errors.append(f"{model}: {'busy' if transient else type(exc).__name__}: {message[:120]}")
+                break
+    return {"ok": False, "error": " | ".join(errors)}
+
+
+def generate_json(prompt: str) -> dict[str, Any]:
+    """Ask the configured AI provider(s) for a JSON object. Returns {"ok", "data", "model", "provider", "error"}."""
+    order = providers()
+    if not order:
+        return {"ok": False, "error": "No AI provider is configured (set ANTHROPIC_API_KEY and/or GEMINI_API_KEY)."}
+    errors = []
+    for provider in order:
+        result = _claude_json(prompt) if provider == "claude" else _gemini_json(prompt)
+        if result["ok"]:
+            return {**result, "provider": provider}
+        errors.append(f"{provider}: {result['error']}")
+    return {"ok": False, "error": " || ".join(errors)}
 
 
 def suggest_plan(columns: list[str], sample_rows: list[dict[str, Any]], preamble: str, filename: str,
@@ -115,7 +195,7 @@ Reply with JSON only, exactly this shape:
         for item in raw_mapping:
             if isinstance(item, dict) and item.get("field") and item.get("column"):
                 mapping[str(item["field"])] = str(item["column"])
-    return {"ok": True, "model": result["model"], "dataset_type": data.get("dataset_type"), "mapping": mapping,
+    return {"ok": True, "model": result["model"], "provider": result.get("provider"), "dataset_type": data.get("dataset_type"), "mapping": mapping,
             "statement_account": str(data.get("statement_account") or ""), "notes": [str(n) for n in data.get("notes") or []],
             "warnings": [str(w) for w in data.get("warnings") or []]}
 

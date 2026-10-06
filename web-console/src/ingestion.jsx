@@ -7,7 +7,7 @@ const PREVIEW_STAGES = [
   {key: 'upload', label: 'Upload', hint: 'Sending the file to the Trace.Pay API'},
   {key: 'read', label: 'Read sheets', hint: 'Opening every sheet and finding the real header row'},
   {key: 'rules', label: 'Detect columns', hint: 'Matching column names with known banking and UPI layouts'},
-  {key: 'gemini', label: 'AI agent', hint: 'Gemini proposes column roles when the rules are unsure. It never invents values.'},
+  {key: 'gemini', label: 'AI agent', hint: 'Claude or Gemini proposes column roles when the rules are unsure. It never invents values.'},
   {key: 'review', label: 'Plan ready', hint: 'Check the plan below before anything is saved'},
 ];
 const IMPORT_STAGES = [
@@ -79,8 +79,8 @@ export default function IngestionPage({token, data, reload, setToast, setError})
         ['read', {status: 'done', ms: read?.ms, detail: `${read?.detail}. Header found on row ${r.sheets.map(s => s.header_row).join(', ')}`}],
         ['rules', {status: 'done', ms: rulesMs, detail: r.sheets.map(s => `${s.name}: ${Object.values(s.plan.source || {}).filter(x => x === 'rule').length} columns recognised`).join(' · ')}],
         ['gemini', gem.some(g => g.used) ? {status: 'done', ms: gemMs, detail: `${gem.find(g => g.used)?.model} filled ${r.sheets.reduce((a, s) => a + Object.values(s.plan.source || {}).filter(x => x === 'gemini').length, 0)} column roles`}
-          : gem.some(g => g.error) ? {status: 'error', detail: `Gemini unavailable: ${gem.find(g => g.error).error.slice(0, 140)}`}
-          : {status: 'skipped', detail: !useAi ? 'Turned off for this file' : !r.gemini?.enabled ? 'No Gemini key configured on the server' : 'Not needed: the rules understood every column'}],
+          : gem.some(g => g.error) ? {status: 'error', detail: `AI unavailable: ${gem.find(g => g.error).error.slice(0, 160)}`}
+          : {status: 'skipped', detail: !useAi ? 'Turned off for this file' : !r.gemini?.enabled ? 'No AI key configured on the server (Claude or Gemini)' : 'Not needed: the rules understood every column'}],
         ['review', {status: 'done', detail: r.sheets.every(s => s.plan.ready) ? 'Every sheet is ready to import' : 'Some details need your input below'}],
       ];
       for (const [k, v] of steps) { setPState(s => ({...s, [k]: {status: 'running'}})); await wait(260); setPState(s => ({...s, [k]: v})); }

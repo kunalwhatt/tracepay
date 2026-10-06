@@ -51,7 +51,7 @@ export function ReportsPage({token, setToast, setError, initialAccount = '', ini
     <div className="rp-layout">
       <div className="panel rp-form">
         <h3>Generate an evidence report</h3>
-        <p className="gx-fine">Built only from persisted records: account behaviour, rules-v1 evidence, the transfer network, every transaction with its source file and row, TraceBank transfers and source conflicts.</p>
+        <p className="gx-fine">Built only from persisted records: account behaviour, TraceSense Core evidence, the transfer network, every transaction with its source file and row, TraceBank transfers and source conflicts.</p>
         <label className="ing-field">Account
           <input list="rp-accounts" value={account} onChange={e => setAccount(e.target.value)} placeholder="e.g. tp.a.collect@tracepay"/>
           <datalist id="rp-accounts">{accounts.map(a => <option key={a.account} value={a.account}>{a.records} records</option>)}</datalist>
@@ -107,7 +107,7 @@ export function ReportViewer({report, onClose, onDelete}) {
       {b.ai_summary && <div className={`rp-ai ${b.ai_summary.error ? 'err' : ''}`}><Sparkles size={15}/><div>
         {b.ai_summary.text ? <><b>{b.ai_summary.label}</b><p>{b.ai_summary.text}</p><small>{b.ai_summary.model}</small></> : <span>AI summary unavailable: {b.ai_summary.error}</span>}
       </div></div>}
-      <h3>2. Advisory risk result (rules-v1)</h3>
+      <h3>2. Advisory risk result (TraceSense Core)</h3>
       <p><span className={`badge ${LEVEL_TONE[b.rules.level] || 'neutral'}`}>{(b.rules.level || 'no records').replaceAll('_', ' ').toUpperCase()}</span> computed for the 24 hours ending {fmtDate(b.rules.window_end)}.</p>
       <ul>{(b.rules.reasons || []).map((r, i) => <li key={i}>{r}</li>)}</ul>
       {(b.rules.evidence || []).map(e => <div className="acct-evidence" key={e.code}><b>{e.code.replaceAll('_', ' ').toLowerCase()}</b>
@@ -122,7 +122,7 @@ export function ReportViewer({report, onClose, onDelete}) {
       <div className="rp-table"><table><thead><tr><th>Time (IST)</th><th>From</th><th>To</th><th>Amount</th><th>Reference</th><th>Evidence</th><th>Source · file · row</th></tr></thead>
         <tbody>{b.transactions.map((t, i) => <tr key={i}><td>{fmtDate(t.time)}</td><td className="mono">{t.from}</td><td className="mono">{t.to}</td><td>{money(t.amount)}</td>
           <td className="mono">{t.reference}</td><td>{EVIDENCE[t.evidence]?.short || t.evidence}</td><td>{[t.source, t.file, t.sheet && `${t.sheet}:${t.row}`].filter(Boolean).join(' · ')}</td></tr>)}</tbody></table></div>
-      {b.ledger_transfers.length > 0 && <><h3>5. TraceBank pilot transfers ({b.ledger_transfers.length})</h3>
+      {b.ledger_transfers.length > 0 && <><h3>5. Trace.Pay wallet transfers ({b.ledger_transfers.length})</h3>
         <div className="rp-table"><table><thead><tr><th>Time</th><th>From</th><th>To</th><th>Amount</th><th>Reference</th><th>Status</th></tr></thead>
           <tbody>{b.ledger_transfers.map((t, i) => <tr key={i}><td>{fmtDate(t.time)}</td><td className="mono">{t.from}</td><td className="mono">{t.to}</td><td>{money(t.amount)}</td><td className="mono">{t.reference}</td><td>{t.status}</td></tr>)}</tbody></table></div></>}
       <h3>{b.ledger_transfers.length ? 6 : 5}. Source conflicts ({b.conflicts.length})</h3>

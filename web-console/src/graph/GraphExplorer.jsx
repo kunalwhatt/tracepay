@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {AlertTriangle, ArrowRight, CircleHelp, Crosshair, FileCheck2, Maximize2, Network, Pause, Play, Users, ZoomIn, ZoomOut} from 'lucide-react';
+import {AlertTriangle, ArrowRight, CircleHelp, Clock3, Crosshair, FileCheck2, Footprints, Hourglass, Maximize2, Network, Pause, Play, ShieldCheck, Users, X, ZoomIn, ZoomOut} from 'lucide-react';
 import {openAssistant} from '../assistant.jsx';
 import {api, EVIDENCE, fmtDate, fmtTime, money, moneyCompact, shortId} from '../lib.js';
 import {edgeGeometry, layoutGraph, levelLabel} from './layout.js';
@@ -16,6 +16,10 @@ export default function GraphExplorer({token, initialRoot = '', onOpenAccount}) 
   const [hoverEdge, setHoverEdge] = useState(null);
   const [cutoff, setCutoff] = useState(null);               // index into time-sorted edges; null = all
   const [playing, setPlaying] = useState(false);
+  const [causal, setCausal] = useState(false);
+  const [flowInfo, setFlowInfo] = useState(null);
+  const [follow, setFollow] = useState(null);
+  const [followBusy, setFollowBusy] = useState(false);
 
   const trace = useCallback(async (root = rootInput, depth = hops) => {
     const ref = String(root || '').trim();
@@ -23,7 +27,8 @@ export default function GraphExplorer({token, initialRoot = '', onOpenAccount}) 
     setBusy(true); setError('');
     try {
       const g = await api(`/api/v1/graph/paths/${encodeURIComponent(ref)}?max_hops=${depth}&limit=800`, {}, token);
-      setGraph(g); setSelected(null); setCutoff(null); setPlaying(false); setRootInput(ref);
+      setGraph(g); setSelected(null); setCutoff(null); setPlaying(false); setRootInput(ref); setFollow(null); setFlowInfo(null);
+      api(`/api/v1/traceflow/${encodeURIComponent(ref)}?hops=${Math.min(depth, 5)}`, {}, token).then(setFlowInfo).catch(() => {});
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }, [rootInput, hops, token]);
 
@@ -46,6 +51,12 @@ export default function GraphExplorer({token, initialRoot = '', onOpenAccount}) 
     return () => clearTimeout(id);
   }, [playing, cutoff, edges.length]);
 
+  async function followMoney(edge, method = 'fifo') {
+    setFollowBusy(true);
+    try { setFollow(await api('/api/v1/traceflow/follow', {method: 'POST', body: JSON.stringify({edge_key: edge.key, root: graph.root, hops: Math.max(hops, 4), method})}, token)); }
+    catch (e) { setError(e.message); } finally { setFollowBusy(false); }
+  }
+  const impossible = causal && flowInfo ? new Set(flowInfo.impossible_edges) : null;
   const startReplay = () => { if (!edges.length) return; if (cutoff == null || cutoff >= edges.length - 1) setCutoff(0); setPlaying(true); };
 
   return <section className="gx">
@@ -62,17 +73,26 @@ export default function GraphExplorer({token, initialRoot = '', onOpenAccount}) 
     {error && <div className="gx-error"><AlertTriangle size={16}/>{error}</div>}
     {!graph && !busy && <GraphEmpty/>}
     {graph && <>
+      {flowInfo && <div className="tf-bar fade-up">
+        <label className="tf-switch"><input type="checkbox" checked={causal} onChange={e => setCausal(e.target.checked)}/><i/><span><Clock3 size={14}/> Time-respecting view</span></label>
+        <span className="tf-stat">Naive trace <b>{flowInfo.naive_edge_count}</b> links → time-respecting <b>{flowInfo.causal_edge_count}</b>
+          {flowInfo.impossible_edges.length > 0 && <em> · {flowInfo.impossible_edges.length} impossible in time ({Math.round(flowInfo.removed_share * 100)}%)</em>}</span>
+        {flowInfo.peel_chains?.length > 0 && <span className="tf-chip"><Footprints size={13}/> {flowInfo.peel_chains.length} peel chain(s)</span>}
+        {flowInfo.exits?.length > 0 && <span className="tf-chip exit">{flowInfo.exits.length} cash-out exit(s)</span>}
+        <button className="text-link" onClick={() => openAssistant(null, {account: graph.root, question: 'What does the time-respecting view remove, and why does it matter?'})}><CircleHelp size={14}/> Why?</button>
+      </div>}
       <div className="gx-layout">
         <div className="gx-stage">
           {nodes.length <= 1
             ? <div className="gx-stage-empty"><Network size={28}/><b>No transfers found for {graph.root}</b><span>Check the spelling, or ingest a dataset that contains this account. An empty result means no persisted record mentions it, not that it never transacted.</span></div>
-            : <Canvas graph={graph} edges={edges} visibleCount={visibleCount} activeNodes={activeNodes}
+            : <Canvas graph={graph} edges={edges} visibleCount={visibleCount} activeNodes={activeNodes} impossible={impossible} flow={follow?.attribution?.edge_flow}
                       selected={selected} setSelected={setSelected} hoverEdge={hoverEdge} setHoverEdge={setHoverEdge}/>}
           <Replay edges={edges} cutoff={cutoff} setCutoff={c => { setPlaying(false); setCutoff(c); }} playing={playing}
                   onPlay={startReplay} onPause={() => setPlaying(false)} visibleCount={visibleCount}/>
         </div>
-        <SidePanel graph={graph} selected={selected} setSelected={setSelected}
-                   onRetrace={id => trace(id, hops)} onOpenAccount={onOpenAccount}/>
+        {follow ? <FollowPanel follow={follow} busy={followBusy} onMethod={m => followMoney({key: follow.seed.key}, m)} onClose={() => setFollow(null)}/> :
+        <SidePanel graph={graph} selected={selected} setSelected={setSelected} onFollow={followMoney} followBusy={followBusy}
+                   onRetrace={id => trace(id, hops)} onOpenAccount={onOpenAccount}/>}
       </div>
       <Timeline edges={edges} visibleCount={visibleCount} selected={selected} setSelected={setSelected}/>
     </>}
@@ -89,7 +109,7 @@ function GraphEmpty() {
   </div>;
 }
 
-function Canvas({graph, edges, visibleCount, activeNodes, selected, setSelected, hoverEdge, setHoverEdge}) {
+function Canvas({graph, edges, visibleCount, activeNodes, selected, setSelected, hoverEdge, setHoverEdge, impossible, flow}) {
   const svgRef = useRef(null);
   const [view, setView] = useState({k: 1, x: 0, y: 0});
   const [size, setSize] = useState({w: 960, h: 560});
@@ -198,14 +218,17 @@ function Canvas({graph, edges, visibleCount, activeNodes, selected, setSelected,
           const geo = geometry.get(e.key); if (!geo) return null;
           const style = EVIDENCE[e.evidence_state] || EVIDENCE.observed;
           const visible = i < visibleCount;
-          const dim = (focus && !focus.keys.has(e.key)) || !visible;
+          const blocked = impossible?.has(e.key);
+          const carried = flow?.[e.key];
+          const dim = (focus && !focus.keys.has(e.key)) || !visible || blocked;
           const isSel = selected?.type === 'edge' && selected.id === e.key;
-          return <g key={e.key} className={`gx-edge ${dim ? 'dim' : ''} ${visible ? '' : 'future'} ${isSel ? 'sel' : ''}`} data-hit
+          return <g key={e.key} className={`gx-edge ${dim ? 'dim' : ''} ${blocked ? 'blocked' : ''} ${visible ? '' : 'future'} ${isSel ? 'sel' : ''}`} data-hit
                     onClick={ev => { ev.stopPropagation(); setSelected({type: 'edge', id: e.key}); }}
                     onMouseEnter={() => setHoverEdge(e.key)} onMouseLeave={() => setHoverEdge(null)}>
             <path d={geo.d} className="gx-edge-hit"/>
             <path d={geo.d} stroke={style.color} strokeWidth={1.4 + 4 * Math.sqrt(Number(e.amount) / maxAmount)} strokeDasharray={style.dash || undefined}
                   markerEnd={`url(#gx-arrow-${e.evidence_state})`} fill="none" className="gx-edge-line"/>
+            {carried && <><path d={geo.d} className="gx-flow-line" fill="none"/><text x={geo.lx} y={geo.ly - 7} textAnchor="middle" className="gx-flow-label">{moneyCompact(carried)}</text></>}
           </g>;
         })}
         {graph.nodes.map(n => {
@@ -263,10 +286,10 @@ function Replay({edges, cutoff, setCutoff, playing, onPlay, onPause, visibleCoun
 
 function Row({k, v, mono}) { return v == null || v === '' ? null : <div className="gx-row"><span>{k}</span><b className={mono ? 'mono' : ''}>{v}</b></div>; }
 
-function SidePanel({graph, selected, setSelected, onRetrace, onOpenAccount}) {
+function SidePanel({graph, selected, setSelected, onRetrace, onOpenAccount, onFollow, followBusy}) {
   if (selected?.type === 'edge') {
     const e = graph.edges.find(x => x.key === selected.id);
-    if (e) return <EdgePanel e={e} onClose={() => setSelected(null)} onPick={id => setSelected({type: 'node', id})}/>;
+    if (e) return <EdgePanel e={e} onClose={() => setSelected(null)} onPick={id => setSelected({type: 'node', id})} onFollow={onFollow} followBusy={followBusy}/>;
   }
   if (selected?.type === 'node') {
     const n = graph.nodes.find(x => x.id === selected.id);
@@ -317,7 +340,7 @@ function NodePanel({n, graph, onClose, onRetrace, onOpenAccount}) {
   </div>;
 }
 
-function EdgePanel({e, onClose, onPick}) {
+function EdgePanel({e, onClose, onPick, onFollow, followBusy}) {
   const style = EVIDENCE[e.evidence_state] || EVIDENCE.observed;
   const ledger = e.source_id === 'tracepay_internal_ledger';
   return <div className="gx-panel">
@@ -330,6 +353,8 @@ function EdgePanel({e, onClose, onPick}) {
     </div>
     <Row k="When" v={fmtDate(e.timestamp)}/>
     <Row k="Reference" v={e.transaction_ref} mono/>
+    {e.flow_confirmed && onFollow && <button className="btn tf-follow" disabled={followBusy} onClick={() => onFollow(e)}>
+      <Footprints size={15}/> {followBusy ? 'Following the money…' : 'Follow this money (TraceFlow)'}</button>}
     <h4 className="gx-sub">Why this line exists</h4>
     <p className="gx-fine">{ledger
       ? (e.flow_confirmed ? 'Trace.Pay committed both sides of this internal ledger transfer. It is not an external bank or UPI settlement.' : 'This internal transfer was attempted and failed. No ledger value moved; it is shown only as an attempt.')
@@ -365,5 +390,33 @@ function Timeline({edges, visibleCount, selected, setSelected}) {
         </button>;
       })}
     </div>
+  </div>;
+}
+
+
+function FollowPanel({follow, busy, onMethod, onClose}) {
+  const gh = follow.golden_hour;
+  const seedAmt = Number(follow.seed.amount);
+  const pct = Math.round(gh.recoverable_share * 100);
+  return <div className="gx-panel tf-panel fade-up">
+    <div className="gx-panel-head"><span className="gx-kind"><Footprints size={14}/> TraceFlow</span><button className="icon-button" onClick={onClose} aria-label="Close"><X size={15}/></button></div>
+    <h3>Following {money(follow.seed.amount)}</h3>
+    <p className="gx-lede mono">{shortId(follow.seed.from, 22)} → {shortId(follow.seed.to, 22)} · {fmtDate(follow.seed.at)}</p>
+    <div className="tf-methods" role="tablist">{['fifo', 'lifo', 'proportional'].map(m => <button key={m} role="tab" aria-selected={follow.method === m}
+      className={follow.method === m ? 'on' : ''} disabled={busy} onClick={() => onMethod(m)}>{m === 'fifo' ? 'First in, first out' : m === 'lifo' ? 'Last in, first out' : 'Proportional'}</button>)}</div>
+    <div className={`tf-gh ${gh.within_golden_hour ? 'live' : ''}`}>
+      <svg viewBox="0 0 64 64" className="tf-ring"><circle cx="32" cy="32" r="26" className="bg"/><circle cx="32" cy="32" r="26" className="fg" strokeDasharray={`${163 * pct / 100} 163`}/></svg>
+      <div><b>{pct}% still traceable</b><span>{money(gh.recoverable_amount)} has not reached a cash-out point</span>
+        <small><Hourglass size={12}/> {gh.within_golden_hour ? 'Inside the golden hour: act now' : `${Math.round(gh.elapsed_minutes)} min since the payment`}{gh.minutes_to_first_exit != null ? ` · first cash-out after ${gh.minutes_to_first_exit} min` : ''}</small></div>
+    </div>
+    <h4 className="gx-sub"><ShieldCheck size={14}/> Hold priority</h4>
+    <div className="tf-holds">{follow.hold_list.slice(0, 8).map(h => <div className={`tf-hold ${h.exit ? 'exit' : ''}`} key={h.account}>
+      <i>{h.priority}</i><div><span className="mono">{shortId(h.account, 26)}</span><small>{h.reason}{h.bottleneck ? ' · bottleneck' : ''}</small></div><b>{money(h.traced_funds_now)}</b></div>)}
+      {!follow.hold_list.length && <p className="gx-fine">The traced money left the recorded network.</p>}</div>
+    <h4 className="gx-sub">Methods compared</h4>
+    <div className="tf-cmp"><div className="head"><span>Account</span><span>FIFO</span><span>LIFO</span><span>Prop.</span></div>
+      {follow.comparison.slice(0, 6).map(r => <div key={r.account}><span className="mono">{shortId(r.account, 16)}</span><span>{moneyCompact(r.fifo)}</span><span>{moneyCompact(r.lifo)}</span><span>{moneyCompact(r.proportional)}</span></div>)}</div>
+    <p className="gx-fine">Disagreement FIFO vs proportional: <b>{Math.round((follow.disagreement.fifo_vs_proportional || 0) * 100)}%</b>. {follow.uncertainty_note}</p>
+    <p className="gx-fine">Amber lines show where this money travelled. Traced amount: {money(seedAmt)}.</p>
   </div>;
 }

@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedVisibility
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -90,6 +92,7 @@ class MainActivity: FragmentActivity(){ override fun onCreate(savedInstanceState
  /** Confirm a payment with fingerprint / face, or the phone's PIN, pattern or password when no biometric is set up. */
  fun biometric(onSuccess:()->Unit,onError:(String)->Unit={}){
   val credential=BiometricManager.Authenticators.DEVICE_CREDENTIAL
+  // Android 11+ accepts strong biometrics or the screen lock; Android 8-10 only allow weak biometrics combined with the screen lock.
   val allowed=if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.R) BiometricManager.Authenticators.BIOMETRIC_STRONG or credential else BiometricManager.Authenticators.BIOMETRIC_WEAK or credential
   val keyguard=getSystemService(KeyguardManager::class.java)
   if(BiometricManager.from(this).canAuthenticate(allowed)!=BiometricManager.BIOMETRIC_SUCCESS&&keyguard?.isDeviceSecure!=true){
@@ -97,6 +100,7 @@ class MainActivity: FragmentActivity(){ override fun onCreate(savedInstanceState
   val prompt=BiometricPrompt(this,mainExecutor,object:BiometricPrompt.AuthenticationCallback(){
    override fun onAuthenticationSucceeded(r:BiometricPrompt.AuthenticationResult){onSuccess()}
    override fun onAuthenticationError(code:Int,msg:CharSequence){onError(msg.toString())}})
+  // No negative button: when the screen lock is allowed, Android shows its own "Use PIN" and cancel options.
   prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle("Confirm Trace.Pay payment").setSubtitle("Use your fingerprint, face or screen lock").setAllowedAuthenticators(allowed).build())
  }
  fun openScreenLockSettings(){try{startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))}catch(_:Exception){startActivity(Intent(Settings.ACTION_SETTINGS))}}
@@ -108,7 +112,7 @@ data class Auth(val access_token:String,val role:String)
 data class Profile(val full_name:String,val vpa_id:String,val gender:String,val selfie_status:String)
 data class Wallet(val balance:String,val vpa_id:String)
 data class Transfer(val transfer_ref:String,val sender_vpa:String,val receiver_vpa:String,val amount:String,val status:String,val created_at:String,val note:String="",val failure_reason:String="")
-data class Risk(val assessment_id:Int,val recipient_ref:String,val level:String,val reasons:List<String>,val observed_transaction_count:Int,val rule_version:String,val disclaimer:String,val data_as_of:String="")
+data class Risk(val assessment_id:Int,val recipient_ref:String,val level:String,val reasons:List<String>,val observed_transaction_count:Int,val rule_version:String,val disclaimer:String,val data_as_of:String="",val shieldLevel:String="",val shieldReasons:List<String> = emptyList())
 
 class TraceApi(private val context:Context){private val client=OkHttpClient.Builder().build();private var token:String?=context.getSharedPreferences("tracepay",0).getString("token",null)
  suspend fun call(path:String,method:String="GET",json:String?=null):String=withContext(Dispatchers.IO){val b=json?.toRequestBody("application/json".toMediaType());val req=Request.Builder().url(API.trimEnd('/')+path).apply{token?.let{header("Authorization","Bearer $it")}}.method(method,b).build();client.newCall(req).execute().use{r->val body=r.body?.string().orEmpty();if(r.code==401&&token!=null&&!path.startsWith("/api/v1/auth/login")){token=null;context.getSharedPreferences("tracepay",0).edit().remove("token").apply();Handler(Looper.getMainLooper()).post{onExpired?.invoke()}};if(!r.isSuccessful)throw Exception(JSONObject(body).optString("detail","Request failed ${r.code}"));body}}
@@ -118,7 +122,7 @@ class TraceApi(private val context:Context){private val client=OkHttpClient.Buil
  suspend fun wallet():Wallet{val o=JSONObject(call("/api/v1/pilot/wallet"));return Wallet(o.getString("balance"),o.getString("vpa_id"))}
  suspend fun transfers():List<Transfer>{val a=org.json.JSONArray(call("/api/v1/pilot/transfers?limit=100"));return (0 until a.length()).map{val o=a.getJSONObject(it);Transfer(o.getString("transfer_ref"),o.optString("sender_vpa"),o.getString("receiver_vpa"),o.getString("amount"),o.getString("status"),o.getString("created_at"),o.optString("note"),if(o.isNull("failure_reason"))"" else o.optString("failure_reason"))}}
  suspend fun recipient(vpa:String):String{val o=JSONObject(call("/api/v1/pilot/recipients/${Uri.encode(vpa)}"));return o.getString("display_name")}
- suspend fun risk(vpa:String):Risk{val o=JSONObject(call("/api/v1/risk/check","POST",JSONObject().put("recipient_ref",vpa).toString()));val rs=o.getJSONArray("reasons");return Risk(o.getInt("assessment_id"),o.getString("recipient_ref"),o.getString("level"),(0 until rs.length()).map{rs.getString(it)},o.getInt("observed_transaction_count"),o.getString("rule_version"),o.getString("disclaimer"),o.optString("data_as_of"))}
+ suspend fun risk(vpa:String,amount:String=""):Risk{val req=JSONObject().put("recipient_ref",vpa);amount.toBigDecimalOrNull()?.let{req.put("amount",it.toPlainString())};val o=JSONObject(call("/api/v1/risk/check","POST",req.toString()));val rs=o.getJSONArray("reasons");val sh=o.optJSONObject("shield");val shieldReasons=sh?.optJSONArray("reasons")?.let{a->(0 until a.length()).map{a.getJSONObject(it).optString("text")}}?:emptyList();return Risk(o.getInt("assessment_id"),o.getString("recipient_ref"),o.getString("level"),(0 until rs.length()).map{rs.getString(it)},o.getInt("observed_transaction_count"),o.getString("rule_version"),o.getString("disclaimer"),o.optString("data_as_of"),sh?.optString("level")?:"",shieldReasons)}
  /** idempotencyKey is created once per payment attempt and reused on retry, so a dropped connection cannot pay twice. */
  suspend fun transfer(vpa:String,amount:String,note:String,idempotencyKey:String):Transfer{val o=JSONObject(call("/api/v1/pilot/transfers","POST",JSONObject().put("receiver_vpa",vpa).put("amount",amount).put("note",note).put("idempotency_key",idempotencyKey).toString()));return Transfer(o.getString("transfer_ref"),o.optString("sender_vpa"),o.getString("receiver_vpa"),o.getString("amount"),o.getString("status"),o.getString("created_at"),o.optString("note"),if(o.isNull("failure_reason"))"" else o.optString("failure_reason"))}
  suspend fun createProfile(name:String,dob:String,gender:String,file:File){withContext(Dispatchers.IO){val body=MultipartBody.Builder().setType(MultipartBody.FORM).addFormDataPart("full_name",name).addFormDataPart("date_of_birth",dob).addFormDataPart("gender",gender).addFormDataPart("consent_profile","true").addFormDataPart("consent_pilot_ledger","true").addFormDataPart("face_photo",file.name,file.asRequestBody("image/jpeg".toMediaType())).build();val req=Request.Builder().url(API.trimEnd('/')+"/api/v1/pilot/profile").header("Authorization","Bearer ${token}").post(body).build();client.newCall(req).execute().use{r->if(!r.isSuccessful)throw Exception(JSONObject(r.body?.string().orEmpty()).optString("detail","Profile creation failed"))}}}
@@ -135,11 +139,101 @@ class TraceApi(private val context:Context){private val client=OkHttpClient.Buil
 @Composable fun TracePayApp(activity:MainActivity){val api=remember{TraceApi(activity)};var logged by remember{mutableStateOf(activity.getSharedPreferences("tracepay",0).getString("token",null)!=null)};var profile by remember{mutableStateOf<Profile?>(null)};var loading by remember{mutableStateOf(logged)};var expired by remember{mutableStateOf(false)};LaunchedEffect(api){api.onExpired={logged=false;profile=null;expired=true}};LaunchedEffect(logged){if(logged){loading=true;profile=try{api.profile()}catch(_:Exception){null};loading=false}};Surface(color=Ivory){Box(Modifier.fillMaxSize()){when{!logged->LoginScreen(api){expired=false;logged=true};loading->SplashLoading();profile==null&&logged->ProfileScreen(api){activityScope(api){profile=api.profile()}};else->MainScreen(api,activity,profile!!){api.logout();logged=false}};if(expired&&!logged)ExpiredBanner(Modifier.align(Alignment.TopCenter)){expired=false}}}}
 
 @Composable fun Brand(){Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(9.dp)){Image(painterResource(R.drawable.tracepay_mark),contentDescription="trace.pay",modifier=Modifier.size(34.dp).clip(RoundedCornerShape(11.dp)));Text("trace",fontSize=21.sp,fontWeight=FontWeight.ExtraBold,color=Ink);Text(".",fontSize=21.sp,fontWeight=FontWeight.ExtraBold,color=Coral);Text("pay",fontSize=21.sp,fontWeight=FontWeight.ExtraBold,color=Ink)}}
-@Composable fun SplashLoading(){val infinite=rememberInfiniteTransition(label="spin");val a by infinite.animateFloat(0.8f,1.15f,infiniteRepeatable(tween(1200),RepeatMode.Reverse),label="pulse");Column(Modifier.fillMaxSize(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){Box(Modifier.size(74.dp).scale(a).clip(CircleShape).background(CoralSoft),contentAlignment=Alignment.Center){Text("t.",fontSize=28.sp,fontWeight=FontWeight.ExtraBold,color=Coral)};Spacer(Modifier.height(15.dp));Text("Preparing your Trace.Pay workspace…",fontSize=11.sp,color=Muted)}}
+@Composable fun SplashLoading(){val infinite=rememberInfiniteTransition(label="spin");val a by infinite.animateFloat(0.8f,1.15f,infiniteRepeatable(tween(1200),RepeatMode.Reverse),label="pulse");Column(Modifier.fillMaxSize(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){Box(Modifier.size(74.dp).scale(a).clip(CircleShape).background(CoralSoft),contentAlignment=Alignment.Center){Text("t.",fontSize=28.sp,fontWeight=FontWeight.ExtraBold,color=Coral)};Spacer(Modifier.height(15.dp));Text("Getting things ready…",fontSize=11.sp,color=Muted)}}
 
-@Composable fun LoginScreen(api:TraceApi,onLogged:()->Unit){var register by remember{mutableStateOf(false)};var email by remember{mutableStateOf("")};var pw by remember{mutableStateOf("")};var busy by remember{mutableStateOf(false)};var error by remember{mutableStateOf("")};val infinite=rememberInfiniteTransition(label="orb");val shift by infinite.animateFloat(0f,1f,infiniteRepeatable(tween(5000),RepeatMode.Reverse),label="shift");LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(18.dp)){item{Brand()};item{Spacer(Modifier.height(30.dp));Text(if(register)"CREATE YOUR\nTRACE.PAY ACCOUNT" else "SEE THE MONEY.\nUNDERSTAND THE RISK.",fontSize=38.sp,fontWeight=FontWeight.ExtraBold,lineHeight=37.sp,color=Ink);Text(if(register)"Create an account, then complete your Trace.Pay participant profile." else "A premium payment intelligence experience built around evidence, movement and explainable risk.",fontSize=12.sp,color=Muted,lineHeight=18.sp,modifier=Modifier.padding(top=12.dp));Box(Modifier.fillMaxWidth().height(125.dp).clip(RoundedCornerShape(24.dp)).background(Brush.linearGradient(listOf(Ink,Color(0xFF2D2A26)))),contentAlignment=Alignment.Center){Column(horizontalAlignment=Alignment.CenterHorizontally){Box(Modifier.size((45+20*shift).dp).clip(CircleShape).background(Coral.copy(alpha=.16f)),contentAlignment=Alignment.Center){Icon(Icons.Default.Bolt,null,tint=Coral)};Text("LIVE INTELLIGENCE",fontSize=9.sp,fontWeight=FontWeight.Bold,color=Color.White);Text("Ledger · Graph · Evidence · Risk",fontSize=11.sp,color=Color.White.copy(alpha=.65f))}}};item{Card(colors=CardDefaults.cardColors(containerColor=Paper),shape=RoundedCornerShape(25.dp),border=BorderStroke(1.dp,Line)){Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){Text(if(register)"Create workspace" else "Welcome back",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Ink);TPTextField("Email",email,{email=it},KeyboardType.Email);TPTextField("Password",pw,{pw=it},KeyboardType.Password,true);if(register)Text("12+ characters · uppercase · number · special character",fontSize=9.sp,color=Muted);if(error.isNotBlank())Text(error,fontSize=10.sp,color=Coral,modifier=Modifier.background(CoralSoft,RoundedCornerShape(12.dp)).padding(10.dp));Button(onClick={busy=true;error="";activityScope(api){try{if(register)api.register(email,pw);api.login(email,pw);onLogged()}catch(e:Exception){error=e.message?:("Request failed")};busy=false}},enabled=!busy&&email.isNotBlank()&&pw.isNotBlank(),colors=ButtonDefaults.buttonColors(containerColor=Coral),modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(17.dp)){if(busy)CircularProgressIndicator(Modifier.size(17.dp),color=Color.White,strokeWidth=2.dp);else{Text(if(register)"Create account" else "Continue",fontWeight=FontWeight.Bold);Spacer(Modifier.weight(1f));Icon(Icons.Default.ArrowForward,null)}};TextButton(onClick={register=!register;error=""},modifier=Modifier.fillMaxWidth()){Text(if(register)"Already have an account? Sign in" else "New to Trace.Pay? Create account",color=Coral,fontWeight=FontWeight.Bold,fontSize=11.sp)}}}};item{Text("TraceBank pilot only · no external bank settlement",fontSize=9.sp,color=Muted,modifier=Modifier.fillMaxWidth().padding(bottom=30.dp))}}}
+@Composable fun LoginScreen(api:TraceApi,onLogged:()->Unit){
+ var register by remember{mutableStateOf(false)}
+ var email by remember{mutableStateOf("")}
+ var pw by remember{mutableStateOf("")}
+ var pw2 by remember{mutableStateOf("")}
+ var show by remember{mutableStateOf(false)}
+ var busy by remember{mutableStateOf(false)}
+ var error by remember{mutableStateOf("")}
+ val drift by rememberInfiniteTransition(label="hero").animateFloat(0f,1f,infiniteRepeatable(tween(6000,easing=LinearEasing),RepeatMode.Reverse),label="drift")
+ val checks=listOf("12+ characters" to (pw.length>=12),"Uppercase letter" to pw.any{it.isUpperCase()},"Number" to pw.any{it.isDigit()},"Symbol" to pw.any{!it.isLetterOrDigit()})
+ val strength=checks.count{it.second}
+ val emailOk=Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$").matches(email.trim())
+ val canSubmit=!busy&&emailOk&&(if(register) strength==4&&pw==pw2 else pw.isNotBlank())
+ fun submit(){busy=true;error="";activityScope(api){try{if(register)api.register(email.trim(),pw);api.login(email.trim(),pw);onLogged()}catch(e:Exception){error=e.message?:"Something went wrong. Try again."};busy=false}}
+ Column(Modifier.fillMaxSize().background(Ivory).verticalScroll(rememberScrollState())){
+  Box(Modifier.fillMaxWidth().height(310.dp).clip(RoundedCornerShape(bottomStart=38.dp,bottomEnd=38.dp)).background(Brush.linearGradient(listOf(Coral,Color(0xFF7B57FF))))){
+   Box(Modifier.size(170.dp).offset(x=(230+30*drift).dp,y=(-50+24*drift).dp).clip(CircleShape).background(Lime))
+   Box(Modifier.size(120.dp).offset(x=(-40+24*drift).dp,y=(200-30*drift).dp).clip(CircleShape).background(Color.White.copy(alpha=.13f)))
+   Box(Modifier.size(56.dp).offset(x=(180-24*drift).dp,y=(160+18*drift).dp).clip(CircleShape).background(Color(0xFF8F6BFF)))
+   Column(Modifier.statusBarsPadding().padding(24.dp)){
+    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
+     Image(painterResource(R.drawable.tracepay_mark),null,Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).border(1.dp,Color.White.copy(alpha=.45f),RoundedCornerShape(12.dp)))
+     Row{Text("trace",fontSize=22.sp,fontWeight=FontWeight.ExtraBold,color=Color.White);Text(".",fontSize=22.sp,fontWeight=FontWeight.ExtraBold,color=Lime);Text("pay",fontSize=22.sp,fontWeight=FontWeight.ExtraBold,color=Color.White)}}
+    Spacer(Modifier.height(40.dp))
+    AnimatedContent(targetState=register,label="title"){r->Column{
+     Text(if(r)"Create your\naccount." else "Welcome\nback.",fontSize=42.sp,fontWeight=FontWeight.ExtraBold,color=Color.White,lineHeight=44.sp)
+     Text(if(r)"Your Trace.Pay ID is ready in a minute." else "Pay safely. See the trail behind every payment.",fontSize=14.sp,color=Color.White.copy(alpha=.88f),modifier=Modifier.padding(top=8.dp))}}}}
+  Column(Modifier.offset(y=(-36).dp).padding(horizontal=18.dp).fillMaxWidth().shadow(22.dp,RoundedCornerShape(28.dp),ambientColor=Coral,spotColor=Coral).background(Paper,RoundedCornerShape(28.dp)).padding(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+   Row(Modifier.fillMaxWidth().background(Ivory,RoundedCornerShape(16.dp)).padding(4.dp)){listOf("Sign in" to false,"Create account" to true).forEach{(t,v)->val sel=register==v
+    Box(Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(12.dp)).background(if(sel)Coral else Color.Transparent).clickable{register=v;error=""},contentAlignment=Alignment.Center){Text(t,fontWeight=FontWeight.Bold,fontSize=14.sp,color=if(sel)Color.White else Muted)}}}
+   AuthField("Email",email,{email=it;error=""},Icons.Default.Email,KeyboardType.Email,isValid=email.isBlank()||emailOk)
+   AuthField("Password",pw,{pw=it;error=""},Icons.Default.Lock,KeyboardType.Password,password=true,show=show,onToggle={show=!show})
+   AnimatedVisibility(register){Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
+    Row(horizontalArrangement=Arrangement.spacedBy(5.dp)){repeat(4){i->Box(Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(if(i<strength)listOf(Color(0xFFE5482F),Color(0xFFE3A127),Color(0xFF8FD14F),Color(0xFF3D9A00))[strength-1] else Line))}}
+    checks.chunked(2).forEach{row->Row{row.forEach{(t,ok)->Row(Modifier.weight(1f),verticalAlignment=Alignment.CenterVertically){Icon(if(ok)Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,null,tint=if(ok)Color(0xFF3D9A00) else Muted,modifier=Modifier.size(15.dp));Spacer(Modifier.width(5.dp));Text(t,fontSize=12.sp,color=if(ok)Ink else Muted)}}}}
+    AuthField("Confirm password",pw2,{pw2=it},Icons.Default.Lock,KeyboardType.Password,password=true,show=show,onToggle={show=!show},isValid=pw2.isBlank()||pw2==pw)}}
+   ErrorText(error)
+   TPPrimary(if(register)"Create account" else "Sign in",busy=busy,enabled=canSubmit){submit()}
+   Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center,verticalAlignment=Alignment.CenterVertically){Icon(Icons.Default.Lock,null,tint=Muted,modifier=Modifier.size(13.dp));Spacer(Modifier.width(5.dp));Text("We never ask for your UPI PIN, OTP or bank password.",fontSize=11.sp,color=Muted)}}}}
 
-@Composable fun ProfileScreen(api:TraceApi,onDone:()->Unit){val context=LocalContext.current;var name by remember{mutableStateOf("")};var dob by remember{mutableStateOf("2000-01-01")};var gender by remember{mutableStateOf("Prefer not to say")};var uri by remember{mutableStateOf<Uri?>(null)};var busy by remember{mutableStateOf(false)};var error by remember{mutableStateOf("")};val picker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()){uri=it};LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){item{Brand();Text("Complete your profile",fontSize=32.sp,fontWeight=FontWeight.ExtraBold,color=Ink,modifier=Modifier.padding(top=28.dp));Text("Your Trace.Pay ID and internal wallet are created here. The photo is validated for exactly one visible face; it is not KYC or identity matching.",fontSize=10.sp,color=Muted,lineHeight=16.sp)};item{Button(onClick={picker.launch("image/*")},colors=ButtonDefaults.buttonColors(containerColor=Paper,contentColor=Ink),border=BorderStroke(1.dp,Line),modifier=Modifier.fillMaxWidth().height(110.dp),shape=RoundedCornerShape(20.dp)){Icon(Icons.Default.PhotoCamera,null,tint=Coral);Spacer(Modifier.width(10.dp));Text(if(uri==null)"Choose clear face photo" else "Photo selected",fontWeight=FontWeight.Bold)}};item{TPTextField("Full name",name,{name=it},KeyboardType.Text)};item{TPTextField("Date of birth (YYYY-MM-DD)",dob,{dob=it},KeyboardType.Number)};item{Text("GENDER",fontSize=9.sp,fontWeight=FontWeight.Bold,color=Muted);Row(horizontalArrangement=Arrangement.spacedBy(7.dp)){listOf("Female","Male","Non-binary","Prefer not to say","Other").take(3).forEach{v->FilterChip(selected=gender==v,onClick={gender=v},label={Text(v,fontSize=9.sp)})}};Row(horizontalArrangement=Arrangement.spacedBy(7.dp)){listOf("Prefer not to say","Other").forEach{v->FilterChip(selected=gender==v,onClick={gender=v},label={Text(v,fontSize=9.sp)})}}};item{if(error.isNotBlank())Text(error,fontSize=10.sp,color=Coral,modifier=Modifier.background(CoralSoft,RoundedCornerShape(12.dp)).padding(10.dp));Button(onClick={busy=true;error="";activityScope(api){try{val f=uri?.let{copyUri(context,it)}?:throw Exception("Choose a photo first");api.createProfile(name,dob,gender,f);onDone()}catch(e:Exception){error=e.message?:"Profile creation failed"};busy=false}},enabled=!busy&&name.length>1&&uri!=null,colors=ButtonDefaults.buttonColors(containerColor=Coral),modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(17.dp)){Text(if(busy)"Creating profile…" else "Create Trace.Pay profile",fontWeight=FontWeight.Bold);Spacer(Modifier.weight(1f));Icon(Icons.Default.ArrowForward,null)}};item{Spacer(Modifier.height(50.dp))}}}
+@Composable fun AuthField(label:String,value:String,onChange:(String)->Unit,icon:ImageVector,type:KeyboardType,password:Boolean=false,show:Boolean=false,onToggle:()->Unit={},isValid:Boolean=true){
+ OutlinedTextField(value,onChange,label={Text(label)},singleLine=true,leadingIcon={Icon(icon,null,tint=Coral)},
+  trailingIcon={if(password)Icon(if(show)Icons.Default.VisibilityOff else Icons.Default.Visibility,if(show)"Hide password" else "Show password",tint=Muted,modifier=Modifier.clip(CircleShape).clickable{onToggle()}.padding(6.dp))},
+  visualTransformation=if(password&&!show)PasswordVisualTransformation() else VisualTransformation.None,
+  keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(keyboardType=type),isError=!isValid,
+  colors=OutlinedTextFieldDefaults.colors(focusedBorderColor=Coral,unfocusedBorderColor=Line,focusedContainerColor=Paper,unfocusedContainerColor=Paper,errorBorderColor=ErrorRed),
+  shape=RoundedCornerShape(16.dp),modifier=Modifier.fillMaxWidth())}
+
+@Composable fun ProfileScreen(api:TraceApi,onDone:()->Unit){
+ var name by remember{mutableStateOf("")}
+ var dob by remember{mutableStateOf("2000-01-01")}
+ var gender by remember{mutableStateOf("Prefer not to say")}
+ var photo by remember{mutableStateOf<File?>(null)}
+ var camera by remember{mutableStateOf(false)}
+ var busy by remember{mutableStateOf(false)}
+ var error by remember{mutableStateOf("")}
+ if(camera){FaceCaptureScreen(onCaptured={photo=it;camera=false;error=""},onCancel={camera=false});return}
+ val bmp=remember(photo){photo?.let{BitmapFactory.decodeFile(it.absolutePath)?.asImageBitmap()}}
+ val dobOk=Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(dob)
+ Column(Modifier.fillMaxSize().background(Ivory).verticalScroll(rememberScrollState()).statusBarsPadding().padding(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
+  Brand()
+  Text("Set up your profile",fontSize=32.sp,fontWeight=FontWeight.ExtraBold,color=Ink,lineHeight=36.sp)
+  Text("Three quick steps. Your Trace.Pay ID and wallet are created at the end.",fontSize=13.sp,color=Muted)
+  StepHeader(1,"Live selfie",photo!=null)
+  Box(Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(24.dp)).background(Paper).border(1.dp,if(photo!=null)Lime else Line,RoundedCornerShape(24.dp)).clickable{camera=true},contentAlignment=Alignment.Center){
+   if(bmp!=null){Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(16.dp)){
+     Image(bmp,"Your selfie",Modifier.size(118.dp).clip(CircleShape).border(4.dp,Lime,CircleShape),contentScale=androidx.compose.ui.layout.ContentScale.Crop)
+     Column{Text("Face captured",fontWeight=FontWeight.Bold,color=Ink,fontSize=16.sp);Text("Tap to retake",color=Coral,fontSize=13.sp,fontWeight=FontWeight.SemiBold)}}}
+   else{Column(horizontalAlignment=Alignment.CenterHorizontally){
+     Box(Modifier.size(72.dp).clip(CircleShape).background(CoralSoft),contentAlignment=Alignment.Center){Icon(Icons.Default.Face,null,tint=Coral,modifier=Modifier.size(38.dp))}
+     Spacer(Modifier.height(10.dp));Text("Take a live selfie",fontWeight=FontWeight.Bold,color=Ink,fontSize=16.sp)
+     Text("Face detection guides you · camera only",color=Muted,fontSize=12.sp)}}}
+  StepHeader(2,"About you",name.trim().length>1&&dobOk)
+  TPTextField("Full name",name,{name=it},KeyboardType.Text)
+  TPTextField("Date of birth (YYYY-MM-DD)",dob,{dob=it},KeyboardType.Number)
+  StepHeader(3,"Gender",true)
+  Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("Female","Male","Non-binary","Prefer not to say","Other").forEach{v->val sel=gender==v
+   Text(v,fontSize=13.sp,fontWeight=FontWeight.Bold,color=Ink,modifier=Modifier.clip(RoundedCornerShape(99.dp)).background(if(sel)Lime else Paper).border(1.dp,if(sel)Color.Transparent else Line,RoundedCornerShape(99.dp)).clickable{gender=v}.padding(horizontal=14.dp,vertical=9.dp))}}
+  ErrorText(error)
+  TPPrimary(if(busy)"Creating your Trace.Pay ID…" else "Create my Trace.Pay ID",busy=busy,enabled=!busy&&name.trim().length>1&&photo!=null&&dobOk){
+   busy=true;error="";activityScope(api){try{api.createProfile(name.trim(),dob,gender,photo!!);onDone()}catch(e:Exception){error=e.message?:"Profile creation failed"};busy=false}}
+  Row(verticalAlignment=Alignment.CenterVertically){Icon(Icons.Default.Lock,null,tint=Muted,modifier=Modifier.size(13.dp));Spacer(Modifier.width(6.dp));Text("Your selfie is encrypted and only checked for one clear face.",fontSize=11.sp,color=Muted)}
+  Spacer(Modifier.height(40.dp))}}
+
+@Composable fun StepHeader(n:Int,title:String,done:Boolean){Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
+ Box(Modifier.size(28.dp).clip(CircleShape).background(if(done)Lime else CoralSoft),contentAlignment=Alignment.Center){if(done)Icon(Icons.Default.Check,null,tint=Ink,modifier=Modifier.size(16.dp)) else Text("$n",fontWeight=FontWeight.ExtraBold,color=Coral)}
+ Text(title,fontSize=16.sp,fontWeight=FontWeight.Bold,color=Ink)}}
+
+@Composable fun ShieldCard(level:String,reasons:List<String>){val (tint,fill)=when(level){"stop"->ErrorRed to Color(0xFFFFE2DD);"caution"->Color(0xFF8A5A00) to Color(0xFFFFF1D2);else->Coral to CoralSoft}
+ Column(Modifier.fillMaxWidth().background(fill,RoundedCornerShape(22.dp)).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+  Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){Icon(Icons.Default.Shield,null,tint=tint);Text(if(level=="stop")"TraceShield · think twice before paying" else "TraceShield",fontWeight=FontWeight.ExtraBold,color=tint,fontSize=14.sp)}
+  reasons.forEach{Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){Text("•",color=tint,fontWeight=FontWeight.Bold);Text(it,fontSize=13.sp,color=Ink,lineHeight=18.sp)}}
+  Text("You decide. Trace.Pay never blocks a payment on its own.",fontSize=11.sp,color=Muted)}}
 
 // ---------------------------------------------------------------------------------------------
 // 4.3 main app: home, pay flow, scan / my QR, activity, profile (matches the Play design files)
@@ -205,7 +299,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
    MainTab.Qr->ScanQrScreen(activity,profile,qrMode,onMode={qrMode=it},onNavigate={tab=it},onPay={prefill=it;tab=MainTab.Pay})
    MainTab.Activity->ActivityScreen(profile,transfers)
    MainTab.Profile->ProfileMain(profile,api.email(),onShowQr={qrMode=1;tab=MainTab.Qr},onLogout=onLogout)}}
-  if(tab!=MainTab.Pay)TPTabBar(tab,{tab=it},Modifier.align(Alignment.BottomCenter))}}
+  if(tab!=MainTab.Pay&&!(tab==MainTab.Qr&&qrMode==0))TPTabBar(tab,{tab=it},Modifier.align(Alignment.BottomCenter))}}
 
 @Composable fun HomeTile(title:String,icon:ImageVector,fill:Color,modifier:Modifier=Modifier,onClick:()->Unit){Column(modifier.clip(RoundedCornerShape(16.dp)).clickable{onClick()},horizontalAlignment=Alignment.CenterHorizontally){Box(Modifier.size(60.dp).clip(RoundedCornerShape(20.dp)).background(fill).then(if(fill==Paper)Modifier.border(1.dp,Line,RoundedCornerShape(20.dp)) else Modifier),contentAlignment=Alignment.Center){Icon(icon,null,tint=Ink)};Text(title,fontSize=12.sp,fontWeight=FontWeight.Bold,color=Ink,modifier=Modifier.padding(top=7.dp))}}
 
@@ -213,9 +307,9 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
  Box(Modifier.size(190.dp).offset(x=170.dp,y=(-40).dp).clip(CircleShape).background(Color(0xFF8F6BFF).copy(alpha=.55f)))
  Box(Modifier.size(110.dp).offset(x=280.dp,y=80.dp).clip(CircleShape).background(Lime))
  Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
-  Row(verticalAlignment=Alignment.CenterVertically){Text("TRACEBANK PILOT BALANCE",fontSize=11.sp,fontWeight=FontWeight.ExtraBold,color=Color.White.copy(alpha=.9f),letterSpacing=1.sp,modifier=Modifier.weight(1f));Text(if(hidden)"SHOW" else "HIDE",fontSize=10.sp,fontWeight=FontWeight.ExtraBold,color=Ink,modifier=Modifier.clip(RoundedCornerShape(99.dp)).background(Color.White.copy(alpha=.9f)).clickable{toggle()}.padding(horizontal=10.dp,vertical=5.dp))}
+  Row(verticalAlignment=Alignment.CenterVertically){Text("TRACE.PAY BALANCE",fontSize=11.sp,fontWeight=FontWeight.ExtraBold,color=Color.White.copy(alpha=.9f),letterSpacing=1.sp,modifier=Modifier.weight(1f));Text(if(hidden)"SHOW" else "HIDE",fontSize=10.sp,fontWeight=FontWeight.ExtraBold,color=Ink,modifier=Modifier.clip(RoundedCornerShape(99.dp)).background(Color.White.copy(alpha=.9f)).clickable{toggle()}.padding(horizontal=10.dp,vertical=5.dp))}
   Text(if(hidden)"₹ •••••" else money(balance),fontSize=36.sp,fontWeight=FontWeight.ExtraBold,color=Color.White,maxLines=1)
-  Text("Internal test value · not a bank account",fontSize=11.sp,color=Color.White.copy(alpha=.8f))}}}
+  Text("Available in your Trace.Pay wallet",fontSize=11.sp,color=Color.White.copy(alpha=.8f))}}}
 
 @Composable fun TransferRow(t:Transfer,me:String){val incoming=t.receiver_vpa==me&&t.sender_vpa!=me;val ok=t.status=="SUCCESS"
  Row(Modifier.fillMaxWidth().background(Paper,RoundedCornerShape(20.dp)).border(1.dp,Line,RoundedCornerShape(20.dp)).padding(12.dp),verticalAlignment=Alignment.CenterVertically){
@@ -246,12 +340,12 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
   TPCard{Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){Box(Modifier.size(44.dp).clip(CircleShape).background(Lime),contentAlignment=Alignment.Center){Icon(Icons.Default.VerifiedUser,null,tint=Ink)};Column(Modifier.weight(1f)){Text("Risk check before every payment",fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink);Text("rules-v1 · an advisory from the records Trace.Pay can see, not proof of fraud",fontSize=11.sp,color=Muted,lineHeight=15.sp)}}}
   TPCard{Text("How a payment works",fontSize=16.sp,fontWeight=FontWeight.Bold,color=Ink);Spacer(Modifier.height(12.dp))
    Row{listOf(Icons.Default.Person to "Recipient",Icons.Default.Warning to "Risk review",Icons.Default.Fingerprint to "Biometric",Icons.Default.VerifiedUser to "Ledger").forEach{(icon,label)->Column(Modifier.weight(1f),horizontalAlignment=Alignment.CenterHorizontally){Box(Modifier.size(42.dp).clip(CircleShape).background(CoralSoft),contentAlignment=Alignment.Center){Icon(icon,null,tint=Coral,modifier=Modifier.size(20.dp))};Text(label,fontSize=10.sp,fontWeight=FontWeight.Bold,color=Ink,modifier=Modifier.padding(top=6.dp))}}}
-   Text("Only an internal SUCCESS counts as completed pilot movement. Intents and failures do not.",fontSize=11.sp,color=Muted,lineHeight=15.sp,modifier=Modifier.padding(top=12.dp))}
+   Text("Only completed payments move money. Failed attempts never do.",fontSize=11.sp,color=Muted,lineHeight=15.sp,modifier=Modifier.padding(top=12.dp))}
   if(payees.isNotEmpty()){
    Row(verticalAlignment=Alignment.CenterVertically){Text("Pay again",fontSize=18.sp,fontWeight=FontWeight.ExtraBold,color=Ink,modifier=Modifier.weight(1f));Text("Tap to pay",fontSize=11.sp,color=Muted)}
    Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(14.dp)){payees.forEachIndexed{i,vpa->Column(Modifier.width(64.dp).clip(RoundedCornerShape(14.dp)).clickable{onPay(vpa)},horizontalAlignment=Alignment.CenterHorizontally){Box(Modifier.size(54.dp).clip(CircleShape).background(if(i%2==1)Lime else CoralSoft),contentAlignment=Alignment.Center){Text(initials(vpa),fontSize=15.sp,fontWeight=FontWeight.ExtraBold,color=Ink)};Text(vpa.substringBefore("@"),fontSize=10.sp,fontWeight=FontWeight.SemiBold,color=Ink,maxLines=1,modifier=Modifier.padding(top=6.dp))}}}}
   Row(verticalAlignment=Alignment.CenterVertically){Text("Recent",fontSize=18.sp,fontWeight=FontWeight.ExtraBold,color=Ink,modifier=Modifier.weight(1f));Text("See all",fontSize=12.sp,fontWeight=FontWeight.Bold,color=Coral,modifier=Modifier.clip(RoundedCornerShape(8.dp)).clickable{onNavigate(MainTab.Activity)}.padding(4.dp))}
-  if(transfers.isEmpty())EmptyState("No transfers yet","Your TraceBank pilot payments will appear here.") else transfers.take(3).forEach{TransferRow(it,profile.vpa_id)}
+  if(transfers.isEmpty())EmptyState("No transfers yet","Your Trace.Pay payments will appear here.") else transfers.take(3).forEach{TransferRow(it,profile.vpa_id)}
   Spacer(Modifier.height(100.dp))}}
 
 @Composable fun Keypad(value:String,onChange:(String)->Unit){val keys=listOf("1","2","3","4","5","6","7","8","9",".","0","⌫")
@@ -275,16 +369,16 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
   if(id==profile.vpa_id){message="That's your own Trace.Pay ID. Choose someone else.";return}
   busy=true;message="";scope.launch{try{recipientName=api.recipient(id);recipientVpa=id;input=id;amount="";stage=PayStage.Amount}catch(e:Exception){message=e.message?:"Recipient not found"};busy=false}}
  fun check(){val v=amount.toBigDecimalOrNull()?:BigDecimal.ZERO;val bal=wallet?.balance?.toBigDecimalOrNull()
-  if(v>BigDecimal("100000")){message="TraceBank pilot transfers are limited to ₹1,00,000.";return}
-  if(bal!=null&&v>bal){message="That's more than your TraceBank balance of ${money(wallet?.balance)}.";return}
-  busy=true;message="";scope.launch{try{risk=api.risk(recipientVpa);attemptKey=UUID.randomUUID().toString();stage=PayStage.Review}catch(e:Exception){message=e.message?:"Could not assess recipient"};busy=false}}
+  if(v>BigDecimal("100000")){message="Each payment is limited to ₹1,00,000.";return}
+  if(bal!=null&&v>bal){message="That's more than your Trace.Pay balance of ${money(wallet?.balance)}.";return}
+  busy=true;message="";scope.launch{try{risk=api.risk(recipientVpa,amount);attemptKey=UUID.randomUUID().toString();stage=PayStage.Review}catch(e:Exception){message=e.message?:"Could not assess recipient"};busy=false}}
  fun submit(){busy=true;scope.launch{try{val t=api.transfer(recipientVpa,amount,"",attemptKey);attemptKey=UUID.randomUUID().toString();result=t;stage=PayStage.Result;refresh()}catch(e:Exception){message="${e.message?:"Network error."} The payment was not confirmed; retrying is safe.";stage=PayStage.Review};busy=false}}
  fun authorise(){message="";stage=PayStage.Authorising;activity.biometric(onSuccess={submit()},onError={err->message=err;stage=PayStage.Review})}
  LaunchedEffect(prefill){if(prefill.isNotBlank()){input=prefill;onConsumePrefill();find()}}
  Column(Modifier.fillMaxSize().background(Ivory).padding(horizontal=18.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
   when(stage){
    PayStage.Recipient->{
-    BackHeader("SANDBOX"){reset(true)}
+    BackHeader("SECURE"){reset(true)}
     Text("Who are you paying?",fontSize=32.sp,fontWeight=FontWeight.ExtraBold,color=Ink,lineHeight=36.sp)
     Text("Enter their Trace.Pay ID. Every Trace.Pay ID ends in @tracepay.",fontSize=13.sp,color=Muted)
     OutlinedTextField(input,{input=it;message=""},singleLine=true,placeholder={Text("name")},suffix={if(!input.contains("@"))Text("@tracepay",color=Muted)},keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(keyboardType=KeyboardType.Email),colors=OutlinedTextFieldDefaults.colors(focusedBorderColor=Coral,unfocusedBorderColor=Line,focusedContainerColor=Paper,unfocusedContainerColor=Paper),shape=RoundedCornerShape(18.dp),textStyle=TextStyle(fontSize=17.sp,fontWeight=FontWeight.SemiBold),modifier=Modifier.fillMaxWidth())
@@ -293,9 +387,9 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
     Spacer(Modifier.weight(1f))
     TPPrimary("Find recipient",busy=busy,enabled=input.isNotBlank()){find()}}
    PayStage.Amount->{
-    BackHeader("SANDBOX"){message="";stage=PayStage.Recipient}
+    BackHeader("SECURE"){message="";stage=PayStage.Recipient}
     Text("To: $recipientName · $recipientVpa",fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink,maxLines=1,modifier=Modifier.fillMaxWidth().background(Paper,RoundedCornerShape(18.dp)).border(1.dp,Line,RoundedCornerShape(18.dp)).padding(horizontal=16.dp,vertical=15.dp))
-    Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally){Text("HOW MUCH?",fontSize=11.sp,fontWeight=FontWeight.ExtraBold,color=Muted,letterSpacing=1.sp);Text("₹"+amount.ifEmpty{"0"},fontSize=60.sp,fontWeight=FontWeight.ExtraBold,color=Coral,maxLines=1);Text("Balance ${money(wallet?.balance)} · pilot limit ₹1,00,000",fontSize=12.sp,color=Muted)}
+    Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally){Text("HOW MUCH?",fontSize=11.sp,fontWeight=FontWeight.ExtraBold,color=Muted,letterSpacing=1.sp);Text("₹"+amount.ifEmpty{"0"},fontSize=60.sp,fontWeight=FontWeight.ExtraBold,color=Coral,maxLines=1);Text("Balance ${money(wallet?.balance)} · limit ₹1,00,000",fontSize=12.sp,color=Muted)}
     Keypad(amount){amount=it;message=""}
     ErrorText(message)
     Spacer(Modifier.weight(1f))
@@ -304,6 +398,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(14.dp)){
      BackHeader("RISK REVIEW",CoralSoft){message="";stage=PayStage.Amount}
      risk?.let{r->val s=riskStyle(r.level)
+      if(r.shieldReasons.isNotEmpty())ShieldCard(r.shieldLevel,r.shieldReasons)
       Column(Modifier.fillMaxWidth().background(s.fill,RoundedCornerShape(24.dp)).padding(18.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){Icon(s.icon,null,tint=s.tint,modifier=Modifier.size(18.dp));Text(s.label,fontSize=13.sp,fontWeight=FontWeight.ExtraBold,color=s.tint)};Text(s.headline,fontSize=27.sp,fontWeight=FontWeight.ExtraBold,color=Ink,lineHeight=31.sp)}
       TPCard{Text("Why this category",fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink);r.reasons.forEach{Text(it,fontSize=13.sp,color=Ink,lineHeight=18.sp,modifier=Modifier.padding(top=8.dp))}}
       Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){StatTile("${r.observed_transaction_count}","Records",Modifier.weight(1f));StatTile(r.rule_version,"Rule",Modifier.weight(1f));StatTile(shortTime(r.data_as_of),"As of",Modifier.weight(1f))}
@@ -318,7 +413,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
     Spacer(Modifier.weight(1f))
     val spin by rememberInfiniteTransition(label="ring").animateFloat(0f,360f,infiniteRepeatable(tween(1400,easing=LinearEasing)),label="spin")
     Box(Modifier.fillMaxWidth(),contentAlignment=Alignment.Center){Box(Modifier.size(190.dp).clip(CircleShape).background(Paper),contentAlignment=Alignment.Center){Icon(Icons.Default.Fingerprint,null,tint=Ink,modifier=Modifier.size(64.dp))};CircularProgressIndicator(progress={0.22f},modifier=Modifier.size(190.dp).rotate(spin),color=Coral,strokeWidth=4.dp,trackColor=Color.Transparent)}
-    Text(if(busy)"Confirming with TraceBank…" else "Confirm on your phone",fontSize=26.sp,fontWeight=FontWeight.ExtraBold,color=Ink,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
+    Text(if(busy)"Confirming with Trace.Pay…" else "Confirm on your phone",fontSize=26.sp,fontWeight=FontWeight.ExtraBold,color=Ink,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
     Text("Use your fingerprint, face or phone PIN to send ${money(amount)} to $recipientName",fontSize=13.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
     Spacer(Modifier.weight(1f))}
    PayStage.Result->{
@@ -328,7 +423,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
     Text(if(ok)"Sent ${money(result?.amount)}" else "Payment not completed",fontSize=30.sp,fontWeight=FontWeight.ExtraBold,color=Ink,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
     Text(if(ok)"to $recipientName · $recipientVpa" else (result?.failure_reason?.ifBlank{null}?:"The transfer failed."),fontSize=14.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
     Text(result?.transfer_ref?:"",fontSize=13.sp,fontWeight=FontWeight.Bold,fontFamily=FontFamily.Monospace,color=Ink,modifier=Modifier.align(Alignment.CenterHorizontally).background(Paper,RoundedCornerShape(99.dp)).border(1.dp,Line,RoundedCornerShape(99.dp)).padding(horizontal=14.dp,vertical=8.dp))
-    Text(if(ok)"Both TraceBank ledger postings committed. This is not a bank or UPI settlement." else "No ledger value was moved.",fontSize=12.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
+    Text(if(ok)"Payment complete. Both sides of the Trace.Pay ledger were updated." else "No ledger value was moved.",fontSize=12.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())
     Spacer(Modifier.weight(1f))
     if(ok){TPPrimary("Back home"){reset(true)};TPSecondary("View activity"){reset(false);onNavigate(MainTab.Activity)}}
     else{TPPrimary("Try again"){message="";result=null;stage=PayStage.Amount};TPSecondary("Back home"){reset(true)}}}}}}
@@ -341,9 +436,10 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
  val payload=remember(profile.vpa_id){"tracepay://pay?pa=${profile.vpa_id}&pn=${Uri.encode(profile.full_name)}"}
  val qr=remember(payload){qrBitmap(payload,720)}
  val line by rememberInfiniteTransition(label="scan").animateFloat(-100f,100f,infiniteRepeatable(tween(1800),RepeatMode.Reverse),label="line")
+ if(mode==0){QrCameraScreen(onCode={raw->val id=normalizeTracePayId(raw);if(id!=null){onPay(id);null}else "That QR is not a Trace.Pay ID."},onClose={onNavigate(MainTab.Home)},onMyQr={onMode(1)});return}
  fun startScan(){scan(activity,onResult={raw->val id=normalizeTracePayId(raw);if(id!=null){message="";onPay(id)}else{message="That QR is not a Trace.Pay ID. Trace.Pay only pays name@tracepay accounts."}},onError={message=it})}
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=18.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
-  BackHeader("SANDBOX QR"){onNavigate(MainTab.Home)}
+  BackHeader("TRACE.PAY QR"){onNavigate(MainTab.Home)}
   Row(Modifier.fillMaxWidth().background(Paper,RoundedCornerShape(18.dp)).border(1.dp,Line,RoundedCornerShape(18.dp)).padding(4.dp)){listOf("Scan","My QR").forEachIndexed{i,label->Box(Modifier.weight(1f).height(42.dp).clip(RoundedCornerShape(14.dp)).background(if(mode==i)Coral else Color.Transparent).clickable{onMode(i);message=""},contentAlignment=Alignment.Center){Text(label,fontSize=15.sp,fontWeight=FontWeight.Bold,color=if(mode==i)Color.White else Ink)}}}
   if(mode==0){
    Box(Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(28.dp)).background(Coral).clickable{startScan()},contentAlignment=Alignment.Center){
@@ -362,7 +458,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
     Text(profile.vpa_id,fontSize=14.sp,fontWeight=FontWeight.SemiBold,color=Muted)
     TPChip(if(copied)"Copied" else "Copy ID",CoralSoft){copyText(ctx,profile.vpa_id);copied=true}}
    TPPrimary("Share my Trace.Pay ID",fill=Lime,textColor=Ink){shareText(ctx,"Pay me on Trace.Pay: ${profile.vpa_id}")}
-   Text("Sandbox QR for receiving TraceBank test payments. It is not a live UPI code.",fontSize=12.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())}
+   Text("Share this code to receive payments to your Trace.Pay ID.",fontSize=12.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.fillMaxWidth())}
   ErrorText(message)
   Spacer(Modifier.height(100.dp))}}
 
@@ -373,7 +469,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=18.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
   Text("Activity",fontSize=34.sp,fontWeight=FontWeight.ExtraBold,color=Ink)
   Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)){filters.forEachIndexed{i,f->Text(f,fontSize=13.sp,fontWeight=FontWeight.Bold,color=Ink,modifier=Modifier.clip(RoundedCornerShape(99.dp)).background(if(filter==i)Lime else Paper).border(1.dp,if(filter==i)Color.Transparent else Line,RoundedCornerShape(99.dp)).clickable{filter=i}.padding(horizontal=14.dp,vertical=9.dp))}}
-  if(items.isEmpty())EmptyState(if(filter==0)"Nothing here yet" else "No ${filters[filter].lowercase()} transfers","TraceBank pilot payments you send or receive appear here.") else items.forEach{TransferRow(it,me)}
+  if(items.isEmpty())EmptyState(if(filter==0)"Nothing here yet" else "No ${filters[filter].lowercase()} transfers","Payments you send or receive appear here.") else items.forEach{TransferRow(it,me)}
   Spacer(Modifier.height(100.dp))}}
 
 @Composable fun LockedSetting(title:String,detail:String){Row(Modifier.fillMaxWidth().background(Paper,RoundedCornerShape(20.dp)).border(1.dp,Line,RoundedCornerShape(20.dp)).padding(14.dp),verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text(title,fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink);Text(detail,fontSize=12.sp,color=Muted)};Row(Modifier.background(Mint,RoundedCornerShape(99.dp)).padding(horizontal=10.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)){Icon(Icons.Default.Lock,null,tint=Green,modifier=Modifier.size(12.dp));Text("Always on",fontSize=11.sp,fontWeight=FontWeight.ExtraBold,color=Green)}}}
@@ -386,8 +482,8 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
   Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Paper).border(1.dp,Line,RoundedCornerShape(20.dp)).clickable{onShowQr()}.padding(14.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(CoralSoft),contentAlignment=Alignment.Center){Icon(Icons.Default.QrCode,null,tint=Ink)};Text("My QR code",fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink,modifier=Modifier.weight(1f));Text("Receive",fontSize=12.sp,color=Muted)}
   LockedSetting("Phone lock for payments","Fingerprint, face or screen lock, every payment")
   LockedSetting("Risk review before paying","Shown before every payment")
-  TPCard{InfoLine("Gender",profile.gender);HorizontalDivider(color=Line);InfoLine("Face check",profile.selfie_status.replace('_',' '));HorizontalDivider(color=Line);InfoLine("Account",email.ifBlank{"—"});HorizontalDivider(color=Line);InfoLine("Ledger","TraceBank internal pilot")}
-  Info("We never ask for your UPI PIN","Trace.Pay never collects a UPI PIN, OTP or bank password. Biometrics stay on your phone.")
+  TPCard{InfoLine("Gender",profile.gender);HorizontalDivider(color=Line);InfoLine("Face check",profile.selfie_status.replace('_',' '));HorizontalDivider(color=Line);InfoLine("Account",email.ifBlank{"—"});HorizontalDivider(color=Line);InfoLine("Wallet","Trace.Pay wallet")}
+  Info("We never ask for your UPI PIN","Trace.Pay never collects a UPI PIN, OTP or bank password. Your fingerprint, face and screen lock stay on your phone.")
   TPSecondary("Log out",textColor=ErrorRed){confirm=true}
   Spacer(Modifier.height(100.dp))}
  if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Log out of Trace.Pay on this phone?")},confirmButton={TextButton(onClick={confirm=false;onLogout()}){Text("Log out",color=ErrorRed)}},dismissButton={TextButton(onClick={confirm=false}){Text("Cancel")}})}

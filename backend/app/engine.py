@@ -86,13 +86,9 @@ def assess_recipient(db: Session, recipient_ref: str, as_of: datetime | None = N
     return row
 
 
-def graph_for_account(db: Session, account_ref: str, max_hops: int = 3, limit: int = 500,
-                      start: datetime | None = None, end: datetime | None = None) -> dict:
-    """Root-anchored bounded traversal.
-
-    Each hop queries only records touching the current frontier, so an account's connections are
-    found regardless of how old they are. ``limit`` caps the total number of edges returned.
-    """
+def collect_neighbourhood(db: Session, account_ref: str, max_hops: int = 3, limit: int = 500,
+                          start: datetime | None = None, end: datetime | None = None) -> tuple[list[Movement], bool]:
+    """Root-anchored bounded traversal: each hop queries only records touching the current frontier."""
     collected: dict[str, Movement] = {}
     seen = {account_ref}
     frontier = {account_ref}
@@ -118,7 +114,19 @@ def graph_for_account(db: Session, account_ref: str, max_hops: int = 3, limit: i
                     next_frontier.add(node)
         seen |= next_frontier
         frontier = next_frontier
-    return assemble_graph(account_ref, collected.values(), max_hops=max_hops, truncated=truncated)
+    return list(collected.values()), truncated
+
+
+def graph_for_account(db: Session, account_ref: str, max_hops: int = 3, limit: int = 500,
+                      start: datetime | None = None, end: datetime | None = None) -> dict:
+    movements, truncated = collect_neighbourhood(db, account_ref, max_hops, limit, start, end)
+    return assemble_graph(account_ref, movements, max_hops=max_hops, truncated=truncated)
+
+
+def recent_movements(db: Session, limit: int = 6000) -> list[Movement]:
+    rows = [tx_movement(t) for t in db.scalars(select(Transaction).order_by(desc(Transaction.occurred_at)).limit(limit))]
+    rows += [ledger_movement(t) for t in db.scalars(select(PilotTransfer).order_by(desc(PilotTransfer.created_at)).limit(limit))]
+    return rows
 
 
 def summarize_account(db: Session, account_ref: str) -> dict:

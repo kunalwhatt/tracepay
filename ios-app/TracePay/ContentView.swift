@@ -75,111 +75,102 @@ struct AccountAccessScreen: View {
     @State private var errorMessage = ""
     @State private var appear = false
 
+    @State private var confirm = ""
+    @Namespace private var segment
+    private let checks: [(String, String)] = [("12+ characters", ".{12,}"), ("Uppercase letter", "[A-Z]"), ("Number", "[0-9]"), ("Symbol", "[^A-Za-z0-9]")]
+    private var strength: Int { checks.filter { password.range(of: $0.1, options: .regularExpression) != nil }.count }
+    private var emailOK: Bool { email.range(of: #"^[^@\s]+@[^@\s]+\.[^@\s]+$"#, options: .regularExpression) != nil }
+    private var canSubmit: Bool { !busy && emailOK && (register ? strength == 4 && confirm == password : !password.isEmpty) }
+    private var strengthColor: Color { [TP.red, TP.amber, Color(hex: 0x8FD14F), TP.green][max(0, strength - 1)] }
+
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                TP.ivory.ignoresSafeArea()
-                AuthAmbientBackground()
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        HStack {
-                            BrandLockup()
-                            Spacer()
-                            Text("PRIVATE PILOT")
-                                .font(.system(size: 9, weight: .heavy))
-                                .tracking(1.5)
-                                .foregroundStyle(TP.muted)
-                        }
-                        .padding(.top, 16)
-                        .padding(.horizontal, 22)
-
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(register ? "CREATE YOUR\nTRACE.PAY ACCOUNT" : "SEE THE MONEY.\nUNDERSTAND THE RISK.")
-                                .font(.system(size: min(42, proxy.size.width * 0.105), weight: .bold, design: .rounded))
-                                .tracking(-2.2)
-                                .foregroundStyle(TP.ink)
-                                .lineSpacing(-3)
-                                .padding(.top, 56)
-                            Text(register ? "One account for the investigator console and the TraceBank pilot." : "A new payment intelligence experience built around evidence, temporal movement and explainable risk.")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(TP.muted)
-                                .lineSpacing(4)
-                                .padding(.top, 14)
-
-                            AnimatedSignalCard()
-                                .padding(.top, 24)
-
-                            VStack(alignment: .leading, spacing: 16) {
-                                Field(title: "EMAIL", text: $email, placeholder: "you@example.com", keyboard: .emailAddress, contentType: .emailAddress)
-                                PasswordField(password: $password, visible: $showPassword)
-                                if register {
-                                    Text("Use 12+ characters with uppercase, number and special character.")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(passwordStrength ? TP.green : TP.muted)
-                                }
-                                if !errorMessage.isEmpty {
-                                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(TP.red)
-                                        .padding(11)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(TP.coralSoft.opacity(0.65), in: RoundedRectangle(cornerRadius: 13))
-                                }
-                                Button {
-                                    Task { await submit() }
-                                } label: {
-                                    HStack {
-                                        if busy { ProgressView().tint(.white) }
-                                        Text(busy ? "Working…" : (register ? "Create account" : "Continue"))
-                                        Spacer()
-                                        Image(systemName: "arrow.right")
-                                    }
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 18)
-                                    .frame(height: 56)
-                                    .background(TP.coralGradient, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-                                    .shadow(color: TP.coral.opacity(0.23), radius: 18, y: 9)
-                                }
-                                .buttonStyle(PressScaleStyle())
-                                .disabled(busy || email.isEmpty || password.isEmpty || (register && !passwordStrength))
-
-                                Button {
-                                    withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-                                        register.toggle(); errorMessage = ""; password = ""
-                                    }
-                                } label: {
-                                    Text(register ? "Already have an account? Sign in" : "New to Trace.Pay? Create account")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(TP.coral)
-                                        .frame(maxWidth: .infinity)
-                                }
-                            }
-                            .padding(21)
-                            .background(TP.paper.opacity(0.93), in: RoundedRectangle(cornerRadius: 25, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 25).stroke(TP.line, lineWidth: 1))
-                            .shadow(color: .black.opacity(0.07), radius: 30, y: 12)
-                            .padding(.top, 25)
-
-                            HStack(spacing: 8) {
-                                Image(systemName: "shield.checkered")
-                                Text("TraceBank pilot only · no external bank settlement")
-                            }
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(TP.muted)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 22)
-                        }
-                        .padding(.horizontal, 20)
-                    }
-                    .opacity(appear ? 1 : 0)
-                    .offset(y: appear ? 0 : 14)
-                }
-            }
-            .onAppear {
-                withAnimation(.easeOut(duration: 0.65)) { appear = true }
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 0) {
+                hero
+                form.offset(y: -36).padding(.horizontal, 18)
             }
         }
+        .background(TP.ivory)
+        .ignoresSafeArea(edges: .top)
+        .onAppear { withAnimation(.easeOut(duration: 0.6)) { appear = true } }
+    }
+
+    private var hero: some View {
+        ZStack(alignment: .topLeading) {
+            LinearGradient(colors: [TP.coral, Color(hex: 0x7B57FF)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Circle().fill(TP.lime).frame(width: 170, height: 170).offset(x: appear ? 250 : 215, y: appear ? -36 : -64)
+            Circle().fill(Color.white.opacity(0.13)).frame(width: 120, height: 120).offset(x: appear ? -16 : -52, y: appear ? 190 : 225)
+            Circle().fill(Color(hex: 0x8F6BFF)).frame(width: 56, height: 56).offset(x: appear ? 168 : 205, y: appear ? 172 : 148)
+            VStack(alignment: .leading, spacing: 10) {
+                BrandLockup(inverted: true)
+                Spacer().frame(height: 28)
+                Text(register ? "Create your\naccount." : "Welcome\nback.")
+                    .font(.system(size: 42, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                    .id(register).transition(.opacity.combined(with: .move(edge: .bottom)))
+                Text(register ? "Your Trace.Pay ID is ready in a minute." : "Pay safely. See the trail behind every payment.")
+                    .font(.system(size: 15, weight: .medium)).foregroundStyle(Color.white.opacity(0.88))
+            }
+            .padding(.horizontal, 24).padding(.top, 72)
+        }
+        .frame(height: 320)
+        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 38, bottomTrailingRadius: 38, style: .continuous))
+        .animation(.easeInOut(duration: 6).repeatForever(autoreverses: true), value: appear)
+    }
+
+    private var form: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 0) {
+                ForEach([false, true], id: \.self) { value in
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { register = value; errorMessage = ""; confirm = "" }
+                    } label: {
+                        Text(value ? "Create account" : "Sign in")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(register == value ? Color.white : TP.muted)
+                            .frame(maxWidth: .infinity).frame(height: 44)
+                            .background {
+                                if register == value {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TP.coral).matchedGeometryEffect(id: "seg", in: segment)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(4)
+            .background(TP.ivory, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            AuthInput(icon: "envelope.fill", placeholder: "Email", text: $email, secure: false, visible: .constant(true), keyboard: .emailAddress, valid: email.isEmpty || emailOK)
+            AuthInput(icon: "lock.fill", placeholder: "Password", text: $password, secure: true, visible: $showPassword, keyboard: .default, valid: true)
+            if register {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 5) {
+                        ForEach(0..<4, id: \.self) { i in Capsule().fill(i < strength ? strengthColor : TP.line).frame(height: 6) }
+                    }
+                    .animation(.easeOut(duration: 0.2), value: strength)
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+                        ForEach(checks.indices, id: \.self) { i in
+                            let ok = password.range(of: checks[i].1, options: .regularExpression) != nil
+                            Label(checks[i].0, systemImage: ok ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 12, weight: .semibold)).foregroundStyle(ok ? TP.green : TP.muted)
+                        }
+                    }
+                    AuthInput(icon: "lock.rotation", placeholder: "Confirm password", text: $confirm, secure: true, visible: $showPassword, keyboard: .default, valid: confirm.isEmpty || confirm == password)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            ErrorText(errorMessage)
+            TPPrimaryButton(title: busy ? (register ? "Creating account…" : "Signing in…") : (register ? "Create account" : "Sign in"), busy: busy) {
+                Task { await submit() }
+            }
+            .disabled(!canSubmit)
+            .opacity(canSubmit || busy ? 1 : 0.55)
+            Label("We never ask for your UPI PIN, OTP or bank password.", systemImage: "lock.shield.fill")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(TP.muted).frame(maxWidth: .infinity)
+        }
+        .padding(18)
+        .background(TP.paper, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: TP.coral.opacity(0.18), radius: 24, y: 12)
+        .opacity(appear ? 1 : 0)
     }
 
     private var passwordStrength: Bool {
@@ -267,6 +258,7 @@ struct ProfileSetupScreen: View {
     @State private var busy = false
     @State private var errorMessage = ""
     @State private var photoLoading = false
+    @State private var showCamera = false
 
     private let genders = ["Female", "Male", "Non-binary", "Prefer not to say", "Other"]
     private var adult: Bool { Calendar.current.dateComponents([.year], from: dob, to: Date()).year ?? 0 >= 18 }
@@ -280,17 +272,26 @@ struct ProfileSetupScreen: View {
                     BrandLockup()
                     Text("Complete your profile")
                         .font(.system(size: 34, weight: .bold, design: .rounded)).tracking(-1.5).padding(.top, 28)
-                    Text("Your Trace.Pay ID and internal wallet are created after this step. The profile photo is used only for one-face validation; it is not identity matching or KYC.")
+                    Text("Your Trace.Pay ID and wallet are created after this step. Your selfie is encrypted and only checked for one clear face.")
                         .font(.system(size: 11)).foregroundStyle(TP.muted).lineSpacing(3)
-                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    Button { showCamera = true } label: {
                         VStack(spacing: 10) {
-                            if let photoData, let image = UIImage(data: photoData) { Image(uiImage: image).resizable().scaledToFill().frame(width: 92, height: 92).clipShape(Circle()) }
-                            else { Image(systemName: "camera.fill").font(.system(size: 28)).foregroundStyle(TP.coral).frame(width: 92, height: 92).background(TP.coralSoft, in: Circle()) }
-                            Text(photoData == nil ? "Choose a clear face photo" : "Change photo").font(.system(size: 11, weight: .bold)).foregroundStyle(TP.coral)
+                            if let photoData, let image = UIImage(data: photoData) {
+                                Image(uiImage: image).resizable().scaledToFill().frame(width: 104, height: 104).clipShape(Circle()).overlay(Circle().stroke(TP.lime, lineWidth: 4))
+                            } else {
+                                Image(systemName: "faceid").font(.system(size: 34)).foregroundStyle(TP.coral).frame(width: 96, height: 96).background(TP.coralSoft, in: Circle())
+                            }
+                            Text(photoData == nil ? "Take a live selfie" : "Face captured · tap to retake").font(.system(size: 14, weight: .bold)).foregroundStyle(photoData == nil ? TP.ink : TP.coral)
+                            Text("Camera only · face detection guides you").font(.system(size: 11)).foregroundStyle(TP.muted)
                         }
-                        .frame(maxWidth: .infinity).padding(20).background(TP.paper, in: RoundedRectangle(cornerRadius: 22)).overlay(RoundedRectangle(cornerRadius: 22).stroke(TP.line))
+                        .frame(maxWidth: .infinity).padding(20)
+                        .background(TP.paper, in: RoundedRectangle(cornerRadius: 22))
+                        .overlay(RoundedRectangle(cornerRadius: 22).stroke(photoData == nil ? TP.line : TP.lime, lineWidth: photoData == nil ? 1 : 2))
                     }
-                    .task(id: selectedPhoto) { await loadPhoto() }
+                    .buttonStyle(PressScaleStyle())
+                    .fullScreenCover(isPresented: $showCamera) {
+                        LiveSelfieView(onCaptured: { data in photoData = data; showCamera = false; errorMessage = "" }, onCancel: { showCamera = false })
+                    }
                     Field(title: "FULL NAME", text: $fullName, placeholder: "Your legal name", keyboard: .default, contentType: .name)
                     DatePicker("Date of birth · 18+", selection: $dob, in: ...Calendar.current.date(byAdding: .year, value: -18, to: Date())!, displayedComponents: .date)
                         .font(.system(size: 12, weight: .semibold)).padding(15).background(TP.paper, in: RoundedRectangle(cornerRadius: 16))
@@ -298,8 +299,8 @@ struct ProfileSetupScreen: View {
                         Text("GENDER").font(.system(size: 9, weight: .heavy)).tracking(1.2).foregroundStyle(TP.muted)
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) { ForEach(genders, id: \.self) { value in Button { gender = value } label: { HStack { Image(systemName: gender == value ? "checkmark.circle.fill" : "circle"); Text(value).lineLimit(1); Spacer() }.font(.system(size: 10, weight: .semibold)).foregroundStyle(gender == value ? TP.coral : TP.ink).padding(12).background(gender == value ? TP.coralSoft : TP.paper, in: RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).stroke(gender == value ? TP.coral.opacity(0.3) : TP.line)) }.buttonStyle(.plain) } }
                     }
-                    ConsentToggle(isOn: $consentProfile, title: "I consent to storing this profile for the pilot.", detail: "Required to create your Trace.Pay participant profile.")
-                    ConsentToggle(isOn: $consentLedger, title: "I understand this is internal test value.", detail: "The TraceBank wallet is not a bank account and does not use live UPI settlement.")
+                    ConsentToggle(isOn: $consentProfile, title: "I consent to storing this profile.", detail: "Required to create your Trace.Pay profile.")
+                    ConsentToggle(isOn: $consentLedger, title: "I agree to the Trace.Pay wallet terms.", detail: "Your balance is held in the Trace.Pay wallet ledger.")
                     if !errorMessage.isEmpty { Text(errorMessage).font(.system(size: 10, weight: .semibold)).foregroundStyle(TP.red).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(TP.coralSoft, in: RoundedRectangle(cornerRadius: 13)) }
                     Button { Task { await create() } } label: { HStack { if busy { ProgressView().tint(.white) }; Text(busy ? "Creating profile…" : "Create Trace.Pay profile"); Spacer(); Image(systemName: "arrow.right") }.font(.system(size: 13, weight: .bold)).foregroundStyle(.white).padding(.horizontal, 18).frame(height: 56).background(TP.coralGradient, in: RoundedRectangle(cornerRadius: 17)).shadow(color: TP.coral.opacity(0.2), radius: 16, y: 8) }.buttonStyle(PressScaleStyle()).disabled(busy || !validName || !adult || photoData == nil || !consentProfile || !consentLedger)
                 }
@@ -355,7 +356,7 @@ struct MainAppScreen: View {
             }
             .transition(.opacity)
             // The pay flow is full-screen, as in the design; every other tab shows the floating bar.
-            if tab != .pay { TPTabBar(tab: $tab) }
+            if tab != .pay && !(tab == .qr && qrMode == 0) { TPTabBar(tab: $tab) }
         }
         .animation(.easeInOut(duration: 0.18), value: tab)
         .task {
@@ -563,7 +564,7 @@ struct BalanceCard: View {
             Circle().fill(TP.lime).frame(width: 110, height: 110).offset(x: 280, y: 80)
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("TRACEBANK PILOT BALANCE").font(.system(size: 11, weight: .heavy)).tracking(1.1).foregroundStyle(Color.white.opacity(0.9))
+                    Text("TRACE.PAY BALANCE").font(.system(size: 11, weight: .heavy)).tracking(1.1).foregroundStyle(Color.white.opacity(0.9))
                     Spacer()
                     Button { hidden.toggle() } label: {
                         Text(hidden ? "SHOW" : "HIDE").font(.system(size: 10, weight: .heavy)).foregroundStyle(TP.ink)
@@ -572,7 +573,7 @@ struct BalanceCard: View {
                 }
                 Text(hidden ? "₹ •••••" : "₹\(balance ?? "—")").font(.system(size: 38, weight: .heavy, design: .rounded)).foregroundStyle(.white)
                     .lineLimit(1).minimumScaleFactor(0.6)
-                Text("Internal test value · not a bank account").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.white.opacity(0.8))
+                Text("Available in your Trace.Pay wallet").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.white.opacity(0.8))
             }
             .padding(20)
         }
@@ -696,7 +697,7 @@ struct HomeScreen: View {
                         .frame(maxWidth: .infinity)
                     }
                 }
-                Text("Only an internal SUCCESS counts as completed pilot movement. Intents and failures do not.").font(.system(size: 11)).foregroundStyle(TP.muted)
+                Text("Only completed payments move money. Failed attempts never do.").font(.system(size: 11)).foregroundStyle(TP.muted)
             }
         }
     }
@@ -735,7 +736,7 @@ struct HomeScreen: View {
                 Button("See all") { tab = .activity }.font(.system(size: 12, weight: .bold)).foregroundStyle(TP.coral)
             }
             if session.transfers.isEmpty {
-                EmptyMobile(icon: "waveform.path.ecg", title: "No transfers yet", text: "Your TraceBank pilot payments will appear here.")
+                EmptyMobile(icon: "waveform.path.ecg", title: "No transfers yet", text: "Your Trace.Pay payments will appear here.")
             } else {
                 ForEach(session.transfers.prefix(3), id: \.transfer_ref) { TransferRow(transfer: $0, myVPA: session.pilotProfile?.vpa_id) }
             }
@@ -841,7 +842,7 @@ struct PayFlowScreen: View {
 
     private var recipientStep: some View {
         VStack(alignment: .leading, spacing: 16) {
-            BackHeader(action: { reset(goHome: true) }, chip: "SANDBOX")
+            BackHeader(action: { reset(goHome: true) }, chip: "SECURE")
             Text("Who are you paying?").font(.system(size: 32, weight: .heavy, design: .rounded)).foregroundStyle(TP.ink)
             Text("Enter their Trace.Pay ID. Every Trace.Pay ID ends in @tracepay.").font(.system(size: 13)).foregroundStyle(TP.muted)
             HStack(spacing: 0) {
@@ -866,7 +867,7 @@ struct PayFlowScreen: View {
 
     private var amountStep: some View {
         VStack(spacing: 14) {
-            BackHeader(action: { message = ""; stage = .recipient }, chip: "SANDBOX")
+            BackHeader(action: { message = ""; stage = .recipient }, chip: "SECURE")
             Text("To: \(recipient?.display_name ?? "") · \(recipient?.vpa_id ?? "")")
                 .font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(TP.ink).lineLimit(1).minimumScaleFactor(0.7)
                 .padding(.horizontal, 16).frame(maxWidth: .infinity, alignment: .leading).frame(height: 50)
@@ -875,7 +876,7 @@ struct PayFlowScreen: View {
             Text("HOW MUCH?").font(.system(size: 11, weight: .heavy)).tracking(1).foregroundStyle(TP.muted).padding(.top, 6)
             Text("₹\(amount.isEmpty ? "0" : amount)").font(.system(size: 64, weight: .heavy, design: .rounded)).foregroundStyle(TP.coral)
                 .lineLimit(1).minimumScaleFactor(0.5)
-            Text("Balance ₹\(session.pilotWallet?.balance ?? "—") · pilot limit ₹1,00,000").font(.system(size: 12)).foregroundStyle(TP.muted)
+            Text("Balance ₹\(session.pilotWallet?.balance ?? "—") · limit ₹1,00,000").font(.system(size: 12)).foregroundStyle(TP.muted)
             Keypad(value: $amount)
             ErrorText(message)
             Spacer(minLength: 0)
@@ -890,6 +891,7 @@ struct PayFlowScreen: View {
                 BackHeader(action: { message = ""; stage = .amount }, chip: "RISK REVIEW", chipFill: TP.coralSoft)
                 if let risk {
                     let style = RiskStyle(level: risk.level)
+                    if let shield = risk.shield, !shield.reasons.isEmpty { ShieldCardView(shield: shield) }
                     VStack(alignment: .leading, spacing: 8) {
                         Label(style.label, systemImage: style.icon).font(.system(size: 13, weight: .heavy)).foregroundStyle(style.tint)
                         Text(style.headline).font(.system(size: 28, weight: .heavy, design: .rounded)).foregroundStyle(TP.ink)
@@ -943,7 +945,7 @@ struct PayFlowScreen: View {
                 Image(systemName: "faceid").font(.system(size: 60, weight: .regular)).foregroundStyle(TP.ink)
             }
             .onAppear { spin = true }
-            Text(busy ? "Confirming with TraceBank…" : "Look at your phone").font(.system(size: 26, weight: .heavy, design: .rounded)).foregroundStyle(TP.ink)
+            Text(busy ? "Confirming with Trace.Pay…" : "Look at your phone").font(.system(size: 26, weight: .heavy, design: .rounded)).foregroundStyle(TP.ink)
             Text("Face ID confirms ₹\(amount) to \(recipient?.display_name ?? "the recipient")").font(.system(size: 13)).foregroundStyle(TP.muted).multilineTextAlignment(.center)
             Spacer()
         }
@@ -965,7 +967,7 @@ struct PayFlowScreen: View {
                 .font(.system(size: 14)).foregroundStyle(TP.muted).multilineTextAlignment(.center)
             Text(result?.transfer_ref ?? "").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundStyle(TP.ink)
                 .padding(.horizontal, 14).padding(.vertical, 8).background(TP.paper, in: Capsule()).overlay(Capsule().stroke(TP.line))
-            Text(ok ? "Both TraceBank ledger postings committed. This is not a bank or UPI settlement." : "No ledger value was moved.")
+            Text(ok ? "Payment complete. Both sides of the Trace.Pay ledger were updated." : "No ledger value was moved.")
                 .font(.system(size: 12)).foregroundStyle(TP.muted).multilineTextAlignment(.center).padding(.horizontal, 20)
             Spacer()
             if ok {
@@ -996,15 +998,15 @@ struct PayFlowScreen: View {
 
     @MainActor private func checkRisk() async {
         guard let recipient else { stage = .recipient; return }
-        if amountValue > 100000 { message = "TraceBank pilot transfers are limited to ₹1,00,000."; return }
+        if amountValue > 100000 { message = "Each payment is limited to ₹1,00,000."; return }
         if let balance = Decimal(string: session.pilotWallet?.balance ?? ""), amountValue > balance {
-            message = "That's more than your TraceBank balance of ₹\(session.pilotWallet?.balance ?? "0")."
+            message = "That's more than your Trace.Pay balance of ₹\(session.pilotWallet?.balance ?? "0")."
             return
         }
         busy = true; message = ""
         defer { busy = false }
         do {
-            risk = try await session.assess(recipientRef: recipient.vpa_id)
+            risk = try await session.assess(recipientRef: recipient.vpa_id, amount: amountValue)
             idempotencyKey = UUID().uuidString   // a new attempt starts here
             stage = .review
         } catch let failure {
@@ -1091,6 +1093,7 @@ struct ScanQRScreen: View {
     @State private var message = ""
     @State private var copied = false
     @State private var line = false
+    @State private var scanKey = 0
 
     private var qrPayload: String {
         let vpa = session.pilotProfile?.vpa_id ?? ""
@@ -1099,9 +1102,38 @@ struct ScanQRScreen: View {
     }
 
     var body: some View {
+        if mode == 0 { cameraView } else { qrBody }
+    }
+
+    /// Tapping Scan opens the camera straight away; the animated frame and "Import from photos" live inside it.
+    private var cameraView: some View {
+        ZStack(alignment: .top) {
+            QRScannerSheet(onScan: { raw in
+                if let id = TracePayID.normalize(raw) {
+                    message = ""; payPrefill = id; tab = .pay
+                } else {
+                    message = "That QR is not a Trace.Pay ID. Trace.Pay only pays name@tracepay accounts."
+                    Haptic.error()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { message = ""; scanKey += 1 }
+                }
+            }, onClose: { tab = .home }, onMyQR: { mode = 1 })
+            .id(scanKey)
+            .ignoresSafeArea()
+            if !message.isEmpty {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                    .padding(12).background(TP.red.opacity(0.92), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal, 20).padding(.top, 80)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: message)
+    }
+
+    private var qrBody: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
-                BackHeader(action: { tab = .home }, chip: "SANDBOX QR")
+                BackHeader(action: { tab = .home }, chip: "TRACE.PAY QR")
                 HStack(spacing: 0) { segment("Scan", 0); segment("My QR", 1) }
                     .padding(4)
                     .background(TP.paper, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -1192,7 +1224,7 @@ struct ScanQRScreen: View {
                         .background(TP.lime, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 }
             }
-            Text("Sandbox QR for receiving TraceBank test payments. It is not a live UPI code.").font(.system(size: 12)).foregroundStyle(TP.muted).multilineTextAlignment(.center)
+            Text("Share this code to receive payments to your Trace.Pay ID.").font(.system(size: 12)).foregroundStyle(TP.muted).multilineTextAlignment(.center)
         }
     }
 }
@@ -1239,7 +1271,7 @@ struct ActivityTab: View {
                     }
                 }
                 if items.isEmpty {
-                    EmptyMobile(icon: "clock.arrow.circlepath", title: filter == 0 ? "Nothing here yet" : "No \(filters[filter].lowercased()) transfers", text: "TraceBank pilot payments you send or receive appear here.")
+                    EmptyMobile(icon: "clock.arrow.circlepath", title: filter == 0 ? "Nothing here yet" : "No \(filters[filter].lowercased()) transfers", text: "Payments you send or receive appear here.")
                 } else {
                     ForEach(items, id: \.transfer_ref) { TransferRow(transfer: $0, myVPA: me) }
                 }
@@ -1332,7 +1364,7 @@ struct ProfileTab: View {
                 .padding(18)
                 .background(TP.coralGradient, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
                 ProfileRowButton(icon: "qrcode", title: "My QR code", detail: "Receive") { qrMode = 1; tab = .qr }
-                LockedSetting(title: "Face ID for payments", detail: "Required for every TraceBank payment")
+                LockedSetting(title: "Face ID for payments", detail: "Required for every Trace.Pay payment")
                 LockedSetting(title: "Risk review before paying", detail: "Shown before every payment")
                 SettingToggle(title: "Haptics", detail: "Taps, success and error", isOn: $haptics)
                 TPCard {
@@ -1343,7 +1375,7 @@ struct ProfileTab: View {
                         Divider()
                         ProfileLine(title: "Account", value: session.email ?? LocalUnlockStore.savedEmail ?? "—")
                         Divider()
-                        ProfileLine(title: "Ledger", value: "TraceBank internal pilot")
+                        ProfileLine(title: "Wallet", value: "Trace.Pay wallet")
                     }
                 }
                 InfoBanner(icon: "lock.shield.fill", title: "We never ask for your UPI PIN", text: "Trace.Pay never collects a UPI PIN, OTP or bank password. Face ID stays on your phone.")
@@ -1421,4 +1453,55 @@ struct ProfileLine: View { let title: String; let value: String; var body: some 
 struct EmptyMobile: View { let icon: String; let title: String; let text: String; var body: some View { VStack(spacing: 9) { Image(systemName: icon).font(.system(size: 28)).foregroundStyle(TP.coral.opacity(0.65)); Text(title).font(.system(size: 13, weight: .bold)); Text(text).font(.system(size: 9)).foregroundStyle(TP.muted).multilineTextAlignment(.center) }.frame(maxWidth: .infinity).padding(35).background(TP.paper, in: RoundedRectangle(cornerRadius: 20)).overlay(RoundedRectangle(cornerRadius: 20).stroke(TP.line)) } }
 struct RiskBadge: View { let level: String; var body: some View { let l=level.lowercased(); let c=l.contains("critical") || l.contains("high") ? TP.red : l.contains("medium") || l.contains("review") ? TP.amber : TP.green; return HStack(spacing: 6) { Circle().fill(c).frame(width: 6, height: 6); Text(level.uppercased()).font(.system(size: 8, weight: .heavy)).tracking(0.7) }.foregroundStyle(c).padding(.horizontal, 9).padding(.vertical, 6).background(c.opacity(0.10), in: Capsule()) } }
 struct PressScaleStyle: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label.scaleEffect(configuration.isPressed ? 0.97 : 1).opacity(configuration.isPressed ? 0.9 : 1).animation(.spring(response: 0.25, dampingFraction: 0.72), value: configuration.isPressed) } }
-struct ProgressScreen: View { @State private var spin = false; var body: some View { ZStack { TP.ivory.ignoresSafeArea(); VStack(spacing: 14) { ZStack { Circle().stroke(TP.coralSoft, lineWidth: 10).frame(width: 65, height: 65); Circle().trim(from: 0, to: 0.3).stroke(TP.coral, style: StrokeStyle(lineWidth: 4, lineCap: .round)).frame(width: 65, height: 65).rotationEffect(.degrees(spin ? 360 : 0)).animation(.linear(duration: 1).repeatForever(autoreverses: false), value: spin) }; Text("Preparing your Trace.Pay workspace…").font(.system(size: 11, weight: .semibold)).foregroundStyle(TP.muted) }.onAppear { spin = true } } } }
+struct ProgressScreen: View { @State private var spin = false; var body: some View { ZStack { TP.ivory.ignoresSafeArea(); VStack(spacing: 14) { ZStack { Circle().stroke(TP.coralSoft, lineWidth: 10).frame(width: 65, height: 65); Circle().trim(from: 0, to: 0.3).stroke(TP.coral, style: StrokeStyle(lineWidth: 4, lineCap: .round)).frame(width: 65, height: 65).rotationEffect(.degrees(spin ? 360 : 0)).animation(.linear(duration: 1).repeatForever(autoreverses: false), value: spin) }; Text("Getting things ready…").font(.system(size: 11, weight: .semibold)).foregroundStyle(TP.muted) }.onAppear { spin = true } } } }
+
+
+struct AuthInput: View {
+    let icon: String
+    let placeholder: String
+    @Binding var text: String
+    let secure: Bool
+    @Binding var visible: Bool
+    let keyboard: UIKeyboardType
+    let valid: Bool
+    @FocusState private var focused: Bool
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).foregroundStyle(TP.coral).frame(width: 20)
+            Group {
+                if secure && !visible { SecureField(placeholder, text: $text) } else { TextField(placeholder, text: $text) }
+            }
+            .keyboardType(keyboard).textInputAutocapitalization(.never).autocorrectionDisabled()
+            .font(.system(size: 15, weight: .medium)).focused($focused)
+            if secure {
+                Button { visible.toggle() } label: { Image(systemName: visible ? "eye.slash" : "eye").foregroundStyle(TP.muted) }
+                    .accessibilityLabel(visible ? "Hide password" : "Show password")
+            }
+        }
+        .padding(.horizontal, 16).frame(height: 56)
+        .background(TP.paper, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(!valid ? TP.red : (focused ? TP.coral : TP.line), lineWidth: focused || !valid ? 2 : 1))
+        .animation(.easeOut(duration: 0.15), value: focused)
+    }
+}
+
+struct ShieldCardView: View {
+    let shield: ShieldInfo
+    private var tint: Color { shield.level == "stop" ? TP.red : (shield.level == "caution" ? TP.amber : TP.coral) }
+    private var fill: Color { shield.level == "stop" ? Color(hex: 0xFFE2DD) : (shield.level == "caution" ? Color(hex: 0xFFF1D2) : TP.coralSoft) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(shield.level == "stop" ? "TraceShield · think twice before paying" : "TraceShield", systemImage: "shield.lefthalf.filled")
+                .font(.system(size: 14, weight: .heavy, design: .rounded)).foregroundStyle(tint)
+            ForEach(shield.reasons, id: \.self) { reason in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("•").font(.system(size: 13, weight: .bold)).foregroundStyle(tint)
+                    Text(reason.text).font(.system(size: 13)).foregroundStyle(TP.ink).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text("You decide. Trace.Pay never blocks a payment on its own.").font(.system(size: 11)).foregroundStyle(TP.muted)
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(fill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}

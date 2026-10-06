@@ -8,11 +8,11 @@
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Trace.Pay</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>4.4.0</string>
-  <key>CFBundleVersion</key><string>23</string>
+  <key>CFBundleShortVersionString</key><string>5.1.0</string>
+  <key>CFBundleVersion</key><string>51</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>NSFaceIDUsageDescription</key><string>Trace.Pay uses Face ID to unlock the account already enrolled on this device.</string>
-  <key>NSCameraUsageDescription</key><string>Trace.Pay uses the camera when you choose to capture a profile photo or scan a payment QR.</string>
+  <key>NSCameraUsageDescription</key><string>Trace.Pay uses the camera to scan payment QR codes and to take your live profile selfie.</string>
   <key>NSContactsUsageDescription</key><string>Trace.Pay accesses your contacts only when you choose a contact to begin a payment. Your contacts are not uploaded by the contacts picker.</string>
   <key>NSLocalNetworkUsageDescription</key><string>Trace.Pay connects to your development Mac on the local network when testing the backend on your own Wi-Fi.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>

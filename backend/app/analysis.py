@@ -14,7 +14,7 @@ from statistics import median
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-RULE_VERSION = "rules-v1"
+RULE_VERSION = "TraceSense Core 1.0"
 RISK_WINDOW = timedelta(hours=24)
 RAPID_ONWARD_WINDOW = timedelta(minutes=30)
 BREADTH_THRESHOLD = 5

@@ -34,6 +34,7 @@ class RiskIn(BaseModel):
     recipient_ref: str = Field(min_length=3, max_length=255)
     # Optional evaluation time. Omit for the live payment flow; investigators can assess a historical window.
     as_of: datetime | None = None
+    amount: Decimal | None = None  # lets TraceShield compare with the payer's usual payments
 
 class RiskOut(BaseModel):
     assessment_id: int
@@ -47,6 +48,7 @@ class RiskOut(BaseModel):
     evidence: list[dict] = []
     window_start: datetime | None = None
     window_end: datetime | None = None
+    shield: dict | None = None
 
 class TransactionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)

@@ -3,6 +3,7 @@ import {AlertTriangle, ArrowLeftRight, CheckCircle2, CircleHelp, Crosshair, File
 import {api, fmtDate, money, shortId} from './lib.js';
 import {GroupedBars, VolumeChart} from './charts.jsx';
 import {openAssistant} from './assistant.jsx';
+import {TraceScorePanel} from './tracescore.jsx';
 import {moneyCompact, fmtDay} from './lib.js';
 
 const LEVEL_TONE = {review: 'high', caution: 'review', no_known_warning: 'low', insufficient_information: 'neutral'};
@@ -52,7 +53,7 @@ export default function AccountAnalysis({token, initialAccount = '', onTrace}) {
       <div className="acct-detail">
         {error && <div className="gx-error"><AlertTriangle size={16}/>{error}</div>}
         {!summary && !busy && !error && <div className="panel chart-empty"><Users size={22}/> Choose an account to see its observed behaviour.</div>}
-        {summary && <AccountDetail s={summary} busy={busy} onTrace={onTrace}/>}
+        {summary && <AccountDetail s={summary} busy={busy} onTrace={onTrace} token={token}/>}
       </div>
     </div>
   </section>;
@@ -62,7 +63,7 @@ function Stat({label, value, note}) {
   return <div className="acct-stat"><span>{label}</span><b>{value}</b>{note && <small>{note}</small>}</div>;
 }
 
-function AccountDetail({s, busy, onTrace}) {
+function AccountDetail({s, busy, onTrace, token}) {
   const rules = s.rules_at_last_activity;
   const report = () => window.dispatchEvent(new CustomEvent('tp-tab', {detail: {tab: 'Reports', account: s.account}}));
   return <div className={`acct-card ${busy ? 'loading' : ''}`}>
@@ -74,9 +75,10 @@ function AccountDetail({s, busy, onTrace}) {
       <div className="acct-actions">
         {onTrace && <button className="btn" onClick={() => onTrace(s.account)}><Crosshair size={15}/> Trace in graph</button>}
         <button className="btn light" onClick={report}><FileCheck2 size={15}/> Evidence report</button>
-        <button className="btn light" onClick={() => openAssistant(null, {account: s.account, question: `Explain what the records show about ${s.account} and why rules-v1 says ${rules?.level || 'what it says'}.`})}><Sparkles size={15}/> Explain</button>
+        <button className="btn light" onClick={() => openAssistant(null, {account: s.account, question: `Explain what the records show about ${s.account} and why TraceSense Core says ${rules?.level || 'what it says'}.`})}><Sparkles size={15}/> Explain</button>
       </div>
     </div>
+    <TraceScorePanel token={token} account={s.account}/>
     {s.plain_summary && <div className="acct-plain"><Sparkles size={15}/><p>{s.plain_summary}</p></div>}
     <div className="acct-stats">
       <Stat label="Received" value={money(s.in_total)} note={`${s.in_count} transfers from ${s.unique_senders} senders`}/>
@@ -91,7 +93,7 @@ function AccountDetail({s, busy, onTrace}) {
       <div className="panel-head"><h3>Why this risk level?</h3>
         <div className="acct-head-right"><span className={`badge ${LEVEL_TONE[rules.level] || 'neutral'}`}>{rules.level.replaceAll('_', ' ')}</span>
           <button className="text-link" onClick={() => openAssistant('risk', {account: s.account})}><CircleHelp size={14}/> How flagging works</button></div></div>
-      <p className="gx-fine">rules-v1 recomputed for the 24 hours ending {fmtDate(s.last_seen)}. An advisory signal, not a finding of fraud. Two or more triggered rules → review; one → caution.</p>
+      <p className="gx-fine">TraceSense Core recomputed for the 24 hours ending {fmtDate(s.last_seen)}. An advisory signal, not a finding of fraud. Two or more triggered rules → review; one → caution.</p>
       <div className="rule-table">
         <div className="rule-row head"><span>Rule</span><span>Triggers when</span><span>Observed</span><span>Result</span></div>
         {(s.rule_table || []).map(r => <div className={`rule-row ${r.triggered ? 'hit' : ''}`} key={r.rule}>

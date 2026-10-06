@@ -1,6 +1,6 @@
 import time
 import csv, io, json, os, secrets
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
@@ -17,17 +17,18 @@ from fastapi.responses import Response
 from pathlib import Path
 import cv2, numpy as np, jwt
 from .db import Base, engine, get_db, SessionLocal
-from .models import User, Transaction, IngestionJob, AuditEvent, RiskAssessment, PaymentIntent, PilotProfile, PilotMerchant, PilotTransfer, PilotWallet, PilotLedgerEntry, InvestigationCase, InvestigationReport, SourceConflict
+from .models import User, Transaction, IngestionJob, AuditEvent, RiskAssessment, PaymentIntent, PilotProfile, PilotMerchant, PilotTransfer, PilotWallet, PilotLedgerEntry, InvestigationCase, InvestigationReport, SourceConflict, Complaint, AccountLabel
 from .schemas import RegisterIn, LoginIn, TokenOut, UserOut, RiskIn, RiskOut, TransactionOut, IngestionOut, PaymentIntentIn, PaymentIntentOut, CaseIn, CaseOut, ReportIn, ReportOut
 from .security import hash_password, verify_password, create_token, renew_token, current_user, require_roles, security as bearer_scheme
-from .engine import assess_recipient, graph_for_account, summarize_account, network_timeseries
+from .engine import assess_recipient, graph_for_account, summarize_account, network_timeseries, collect_neighbourhood, recent_movements, _movements_for
+from . import traceflow, tracesense, tracerank, tracebench
 from .ingestion_service import read_upload, deterministic_mapping, normalize_row, sample_for_ai
 from .gemini_service import suggest_mapping, enabled as gemini_enabled, status as gemini_status
 from . import schema_agent, assistant as tp_assistant
 from .blob_service import upload_raw as upload_raw_blob
 from .ids import normalize_tracepay_id
 
-APP_VERSION = "4.5.0"
+APP_VERSION = "5.1.0"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
@@ -361,6 +362,40 @@ def create_report(body: ReportIn, db: Session = Depends(get_db), user: User = De
     report = InvestigationReport(report_ref="RPT-" + uuid4().hex[:12].upper(), title=body.title.strip(), report_type=body.report_type.strip(), case_ref=body.case_ref.strip() if body.case_ref else None, body=body.body, created_by=user.id)
     db.add(report); db.flush(); db.add(AuditEvent(actor_user_id=user.id, action="report.created", object_ref=report.report_ref)); db.commit(); db.refresh(report); return report
 
+def trace_shield(db: Session, user: User, recipient: str, amount: Decimal | None) -> dict:
+    """TraceShield: payer-specific warnings shown before a payment, each with a plain reason. Advisory only."""
+    reasons: list[dict] = []
+    payer_vpa = db.scalar(select(PilotProfile.vpa_id).where(PilotProfile.user_id == user.id))
+    mine = _movements_for(db, {payer_vpa}, include_failed=False) if payer_vpa else []
+    paid_before = any(m.sender == payer_vpa and m.receiver == recipient for m in mine)
+    if payer_vpa and not paid_before:
+        reasons.append({"code": "FIRST_TIME_PAYEE", "severity": 1, "text": "You have never paid this account before."})
+    sent = [m.amount for m in mine if m.sender == payer_vpa]
+    if amount and sent:
+        usual = sorted(sent)[len(sent) // 2]
+        if usual > 0 and amount >= usual * 5 and amount >= 2000:
+            reasons.append({"code": "UNUSUAL_AMOUNT", "severity": 2, "text": f"This is {int(amount / usual)}× your usual payment of ₹{usual}."})
+    rec = _movements_for(db, {recipient}, include_failed=False)
+    if rec:
+        first_seen = min(m.at for m in rec)
+        if datetime.now(timezone.utc) - first_seen <= timedelta(days=7):
+            reasons.append({"code": "NEW_ACCOUNT", "severity": 1, "text": "This account first appeared in the last 7 days."})
+        vc = tracesense.victim_convergence(recipient, sorted(rec, key=lambda m: m.at), datetime.now(timezone.utc))
+        if vc["first_time_payers_24h"] >= 5 and vc["first_time_share"] >= 0.8:
+            reasons.append({"code": "MANY_NEW_PAYERS", "severity": 2, "text": f"{vc['first_time_payers_24h']} people paid this account for the first time in the last 24 hours."})
+        score = tracesense.trace_score(recipient, rec)
+        if score["score"] is not None and score["score"] >= 50:
+            reasons.append({"code": "TRACESCORE", "severity": 3, "text": f"TraceScore {score['score']}/100 ({score['band_label']}): {', '.join(c['label'].lower() for c in score['contributions'][:2])}."})
+    complaints = db.scalar(select(func.count(Complaint.id)).where(Complaint.paid_to == recipient)) or 0
+    if complaints:
+        reasons.append({"code": "COMPLAINTS", "severity": 3, "text": f"{complaints} complaint(s) name this account."})
+    label = db.scalar(select(AccountLabel).where(AccountLabel.account_ref == recipient))
+    if label and label.label == "confirmed_fraud":
+        reasons.append({"code": "CONFIRMED", "severity": 3, "text": "Investigators have flagged this account."})
+    level = "stop" if any(r["severity"] >= 3 for r in reasons) else "caution" if any(r["severity"] >= 2 for r in reasons) else "info" if reasons else "clear"
+    return {"engine": "TraceShield", "level": level, "reasons": sorted(reasons, key=lambda r: -r["severity"])}
+
+
 class ReportGenerateIn(BaseModel):
     account_ref: str = Field(min_length=2, max_length=255)
     title: str | None = Field(default=None, max_length=180)
@@ -475,6 +510,163 @@ async def reset_data(body: ResetIn, db: Session = Depends(get_db), user: User = 
     return {"scope": body.scope, "deleted": counts, "kept": ["users", "profiles", "wallets", "TraceBank ledger", "audit log"]}
 
 
+# ------------------------------------------------------------------------------------------
+# TraceFlow · TraceSense / TraceScore · TraceRank · TraceBench
+# ------------------------------------------------------------------------------------------
+
+@app.get("/api/v1/traceflow/{account_ref}")
+def traceflow_overview(account_ref: str, hops: int = Query(3, ge=1, le=5), db: Session = Depends(get_db),
+                       user: User = Depends(require_roles(*OPS_ROLES))):
+    """Naive vs time-respecting view of an account's neighbourhood, plus peel chains."""
+    root = account_ref.strip()
+    moves, truncated = collect_neighbourhood(db, root, hops, 800)
+    reach = traceflow.causal_reach(moves, root, max_hops=hops + 2)
+    return {"root": root, "truncated": truncated, **reach, "peel_chains": traceflow.peel_chains(moves),
+            "exits": sorted({a for m in moves for a in (m.sender, m.receiver) if traceflow.exit_kind(a)})}
+
+
+class FollowIn(BaseModel):
+    edge_key: str = Field(min_length=3, max_length=120)
+    root: str = Field(min_length=2, max_length=255)
+    hops: int = Field(default=4, ge=1, le=6)
+    method: str = Field(default="fifo", pattern="^(fifo|lifo|proportional)$")
+
+
+@app.post("/api/v1/traceflow/follow")
+def traceflow_follow(body: FollowIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    """Follow one payment's money forward: attribution by three methods, holds, bottlenecks, golden hour."""
+    moves, truncated = collect_neighbourhood(db, body.root.strip(), body.hops, 1500)
+    if not any(m.key == body.edge_key for m in moves):
+        raise HTTPException(404, "That transfer is not in this trace. Trace from one of its accounts first.")
+    both = traceflow.attribute_all(moves, body.edge_key)
+    chosen = both["methods"][body.method]
+    cut = traceflow.bottlenecks(moves, chosen)
+    seed_receiver = chosen["seed"]["to"]
+    reach = traceflow.causal_reach(moves, seed_receiver, since=datetime.fromisoformat(chosen["seed"]["at"]), max_hops=body.hops + 2)
+    return {"seed": chosen["seed"], "method": body.method, "attribution": chosen, "comparison": both["comparison"],
+            "disagreement": both["disagreement"], "uncertainty_note": both["uncertainty_note"], "bottlenecks": cut,
+            "hold_list": traceflow.hold_list(chosen, cut), "golden_hour": traceflow.golden_hour(chosen),
+            "causal_edges": reach["forward_edges"], "truncated": truncated}
+
+
+@app.get("/api/v1/tracescore/{account_ref}")
+def tracescore(account_ref: str, as_of: datetime | None = None, db: Session = Depends(get_db),
+               user: User = Depends(require_roles(*OPS_ROLES))):
+    ref = account_ref.strip()
+    moves, _ = collect_neighbourhood(db, ref, 2, 1200)
+    network = tracesense.network_signals(moves)
+    result = tracesense.trace_score(ref, moves, as_of=as_of, network=network)
+    label = db.scalar(select(AccountLabel).where(AccountLabel.account_ref == ref))
+    result["label"] = None if not label else {"label": label.label, "reason": label.reason, "updated_at": label.updated_at.isoformat()}
+    result["complaints"] = db.scalar(select(func.count(Complaint.id)).where(Complaint.paid_to == ref)) or 0
+    return result
+
+
+class ComplaintIn(BaseModel):
+    victim_name: str = Field(min_length=2, max_length=160)
+    victim_account: str | None = Field(default=None, max_length=255)
+    paid_to: str = Field(min_length=2, max_length=255)
+    amount: Decimal = Field(gt=0, le=Decimal("100000000"))
+    paid_at: datetime
+    scam_type: str = Field(default="unknown", max_length=60)
+    description: str = Field(default="", max_length=4000)
+
+
+@app.post("/api/v1/complaints", status_code=201)
+def create_complaint(body: ComplaintIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    """Record a victim complaint, match it to a recorded payment when possible, and start the trace."""
+    paid_to = body.paid_to.strip().lower()
+    paid_at = body.paid_at if body.paid_at.tzinfo else body.paid_at.replace(tzinfo=timezone.utc)
+    near = [m for m in _movements_for(db, {paid_to}, start=paid_at - timedelta(days=1), end=paid_at + timedelta(days=1), include_failed=False)
+            if m.receiver == paid_to and abs(m.amount - body.amount) <= max(Decimal("1"), body.amount * Decimal("0.01"))]
+    if body.victim_account:
+        near = [m for m in near if m.sender == body.victim_account.strip().lower()] or near
+    match = min(near, key=lambda m: abs((m.at - paid_at).total_seconds()), default=None)
+    complaint = Complaint(complaint_ref="CMP-" + uuid4().hex[:10].upper(), victim_name=body.victim_name.strip(),
+                          victim_account=(body.victim_account or "").strip().lower() or None, paid_to=paid_to, amount=body.amount,
+                          paid_at=paid_at, scam_type=body.scam_type, description=body.description.strip(),
+                          matched_transaction_key=match.key if match else None, created_by=user.id)
+    db.add(complaint); db.flush()
+    db.add(AuditEvent(actor_user_id=user.id, action="complaint.created", object_ref=complaint.complaint_ref,
+                      detail=json.dumps({"paid_to": paid_to, "matched": bool(match)})))
+    db.commit(); db.refresh(complaint)
+    trace = None
+    if match:
+        moves, _ = collect_neighbourhood(db, paid_to, 4, 1500)
+        chosen = traceflow.attribute(moves, match.key, "fifo")
+        cut = traceflow.bottlenecks(moves, chosen)
+        trace = {"seed": chosen["seed"], "hold_list": traceflow.hold_list(chosen, cut), "golden_hour": traceflow.golden_hour(chosen)}
+    return {**_complaint_json(complaint), "trace": trace}
+
+
+def _complaint_json(c: Complaint) -> dict:
+    return {"id": c.id, "complaint_ref": c.complaint_ref, "victim_name": c.victim_name, "victim_account": c.victim_account,
+            "paid_to": c.paid_to, "amount": str(c.amount), "paid_at": c.paid_at.isoformat(), "scam_type": c.scam_type,
+            "description": c.description, "matched_transaction_key": c.matched_transaction_key, "status": c.status,
+            "created_at": c.created_at.isoformat()}
+
+
+@app.get("/api/v1/complaints")
+def list_complaints(db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    return [_complaint_json(c) for c in db.scalars(select(Complaint).order_by(desc(Complaint.created_at)).limit(300))]
+
+
+class LabelIn(BaseModel):
+    account_ref: str = Field(min_length=2, max_length=255)
+    label: str = Field(pattern="^(confirmed_fraud|not_suspicious|watch)$")
+    reason: str = Field(default="", max_length=2000)
+
+
+@app.post("/api/v1/labels")
+def set_label(body: LabelIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    ref = body.account_ref.strip().lower()
+    row = db.scalar(select(AccountLabel).where(AccountLabel.account_ref == ref))
+    if row:
+        row.label, row.reason, row.created_by = body.label, body.reason.strip(), user.id
+    else:
+        row = AccountLabel(account_ref=ref, label=body.label, reason=body.reason.strip(), created_by=user.id); db.add(row)
+    db.add(AuditEvent(actor_user_id=user.id, action="label.set", object_ref=ref, detail=json.dumps({"label": body.label, "reason": body.reason})))
+    db.commit()
+    return {"account_ref": ref, "label": body.label}
+
+
+@app.get("/api/v1/labels")
+def list_labels(db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    return [{"account_ref": l.account_ref, "label": l.label, "reason": l.reason, "updated_at": l.updated_at.isoformat()}
+            for l in db.scalars(select(AccountLabel).order_by(desc(AccountLabel.updated_at)))]
+
+
+@app.delete("/api/v1/labels/{account_ref}", status_code=204)
+def delete_label(account_ref: str, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    row = db.scalar(select(AccountLabel).where(AccountLabel.account_ref == account_ref.strip().lower()))
+    if row:
+        db.add(AuditEvent(actor_user_id=user.id, action="label.removed", object_ref=row.account_ref))
+        db.delete(row); db.commit()
+
+
+@app.get("/api/v1/tracerank")
+def tracerank_endpoint(limit: int = Query(40, ge=1, le=200), db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    """Accounts ranked by how strongly their money connects to confirmed fraud and complaints."""
+    seeds: dict[str, float] = {}
+    for l in db.scalars(select(AccountLabel).where(AccountLabel.label == "confirmed_fraud")):
+        seeds[l.account_ref] = seeds.get(l.account_ref, 0) + 2.0
+    for c in db.scalars(select(Complaint)):
+        seeds[c.paid_to] = seeds.get(c.paid_to, 0) + 1.0
+    cleared = {l.account_ref for l in db.scalars(select(AccountLabel).where(AccountLabel.label == "not_suspicious"))}
+    return tracerank.trace_rank(recent_movements(db), seeds, cleared, limit=limit)
+
+
+class BenchIn(BaseModel):
+    seed: int = Field(default=42, ge=0, le=100000)
+    quick: bool = False
+
+
+@app.post("/api/v1/tracebench/run")
+def tracebench_run(body: BenchIn, user: User = Depends(require_roles(*OPS_ROLES))):
+    """Run the synthetic fraud world and every experiment. Uses generated data only; nothing is stored."""
+    return tracebench.run(seed=body.seed, quick=body.quick)
+
+
 @app.get("/api/v1/transactions", response_model=list[TransactionOut])
 def transactions(limit: int = Query(100, ge=1, le=500), account_ref: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
     stmt = select(Transaction).order_by(desc(Transaction.occurred_at)).limit(limit)
@@ -584,6 +776,7 @@ async def risk_check(body: RiskIn, db: Session = Depends(get_db), user: User = D
             raise HTTPException(422, str(exc))
     assessment = assess_recipient(db, recipient, as_of=as_of)
     reasons = json.loads(assessment.reasons_json)
+    shield = trace_shield(db, user, recipient, body.amount)
     event = activity_event(db, actor_user_id=user.id, event_type="risk.assessed", object_ref=assessment.recipient_ref,
                            details={"assessment_id": assessment.id, "level": assessment.level, "rule_version": assessment.rule_version,
                                     "observed_record_count": assessment.transaction_count})
@@ -592,7 +785,7 @@ async def risk_check(body: RiskIn, db: Session = Depends(get_db), user: User = D
     return RiskOut(assessment_id=assessment.id, recipient_ref=assessment.recipient_ref, level=assessment.level, reasons=reasons,
         observed_transaction_count=assessment.transaction_count, data_as_of=assessment.assessed_at, rule_version=assessment.rule_version,
         evidence=json.loads(assessment.evidence_json or "[]") if user.role in OPS_ROLES else [],
-        window_start=assessment.window_start, window_end=assessment.window_end,
+        window_start=assessment.window_start, window_end=assessment.window_end, shield=shield,
         disclaimer="Advisory only. Based solely on records currently ingested into Trace.Pay; not proof of fraud and not a guarantee of safety.")
 
 @app.get("/api/v1/graph/paths/{account_ref}")
@@ -981,6 +1174,18 @@ def get_own_profile_photo(db: Session = Depends(get_db), user: User = Depends(cu
     # Re-detect the MIME type from the signature; never trust a filename.
     mime = "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "image/png" if raw.startswith(b"\x89PNG\r\n\x1a\n") else "image/webp"
     return Response(content=raw, media_type=mime, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+@app.get("/api/v1/pilot/users/{vpa_id}/photo")
+def get_member_photo(vpa_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    """Investigators can view a member's live selfie in the console. Every view is audited."""
+    profile = db.scalar(select(PilotProfile).where(PilotProfile.vpa_id == vpa_id.strip().lower()))
+    if not profile or not profile.photo_storage_key: raise HTTPException(404, "Profile photo not found")
+    path = Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos")) / profile.photo_storage_key
+    try: raw = _pii_fernet.decrypt(path.read_bytes())
+    except (OSError, InvalidToken): raise HTTPException(404, "Profile photo is unavailable")
+    db.add(AuditEvent(actor_user_id=user.id, action="member.photo_viewed", object_ref=profile.vpa_id)); db.commit()
+    mime = "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "image/png" if raw.startswith(b"\x89PNG\r\n\x1a\n") else "image/webp"
+    return Response(content=raw, media_type=mime, headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"})
 
 @app.get("/api/v1/pilot/recipients/{vpa_id}")
 async def lookup_pilot_recipient(vpa_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):

@@ -43,8 +43,12 @@ enum LocalUnlockStore {
 
 struct APIError: Decodable { let detail: String? }
 struct AuthResponse: Decodable { let access_token: String; let token_type: String; let role: String }
+struct ShieldReason: Decodable, Hashable { let code: String; let severity: Int; let text: String }
+struct ShieldInfo: Decodable, Hashable { let level: String; let reasons: [ShieldReason] }
+
 struct RiskResponse: Decodable, Identifiable {
     var id: Int { assessment_id }
+    let shield: ShieldInfo?
     let assessment_id: Int
     let recipient_ref: String
     let level: String
@@ -351,8 +355,11 @@ final class TracePaySession: ObservableObject {
         return result
     }
 
-    func assess(recipientRef: String) async throws -> RiskResponse {
-        try await send("/api/v1/risk/check", method: "POST", body: ["recipient_ref": recipientRef], authenticated: true)
+    /// The amount (when known) lets TraceShield compare this payment with the payer's usual payments.
+    func assess(recipientRef: String, amount: Decimal? = nil) async throws -> RiskResponse {
+        var body = ["recipient_ref": recipientRef]
+        if let amount { body["amount"] = "\(amount)" }
+        return try await send("/api/v1/risk/check", method: "POST", body: body, authenticated: true)
     }
 
     func createPaymentIntent(assessmentID: Int, recipientRef: String, amount: Decimal?, note: String) async throws -> PaymentIntentResponse {

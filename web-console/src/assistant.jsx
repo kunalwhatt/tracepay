@@ -133,7 +133,7 @@ export default function Assistant({token, tab, focusAccount}) {
     <button className="as-fab" onClick={() => setOpen(o => !o)} aria-label="Open the Trace.Pay assistant"><Sparkles size={18}/> <span>Ask Trace.Pay</span></button>
     {open && <aside className="as-panel" aria-label="Trace.Pay assistant">
       <div className="as-head">
-        <div><b>Trace.Pay assistant</b><small>{gemini?.enabled ? `AI answers by Gemini · ${gemini.model}` : 'Built-in explanations · add a Gemini key for AI answers'}</small></div>
+        <div><b>Trace.Pay assistant</b><small>{gemini?.enabled ? `AI answers by ${gemini.provider === 'claude' ? 'Claude' : 'Gemini'} · ${gemini.model}` : 'Built-in explanations · add a Claude or Gemini key for AI answers'}</small></div>
         <button onClick={() => setOpen(false)} aria-label="Close"><X size={18}/></button>
       </div>
       <div className="as-tabs">

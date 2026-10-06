@@ -32,14 +32,14 @@ TOPICS: dict[str, dict[str, Any]] = {
                            ["ATM", "3 hops after", "TP-E withdrew cash"]]},
     },
     "risk": {
-        "title": "How risk is flagged (rules-v1)",
-        "body": (f"rules-v1 looks only at the **{int(RISK_WINDOW.total_seconds() // 3600)} hours** before the check, and only at records "
+        "title": "How risk is flagged (TraceSense Core)",
+        "body": (f"TraceSense Core looks only at the **{int(RISK_WINDOW.total_seconds() // 3600)} hours** before the check, and only at records "
                  "that actually moved value (source records and committed TraceBank transfers; failed attempts never count).\n\n"
                  "Three signals are checked. **Two or more** signals → **REVIEW**. **One** → **CAUTION**. None but some records → "
                  "**NO KNOWN WARNING**. No records → **INSUFFICIENT INFORMATION**.\n\n"
                  "Every signal stores the exact records that triggered it, so the result can be audited. The result is an "
                  "**advisory**, not proof of fraud: a busy shop can look like a collection account."),
-        "table": {"title": "rules-v1 signals", "columns": ["Signal", "Triggers when", "Why it matters"],
+        "table": {"title": "TraceSense Core signals", "columns": ["Signal", "Triggers when", "Why it matters"],
                   "rows": [["Inbound breadth", f"≥ {BREADTH_THRESHOLD} distinct senders in 24 h", "Many people paying one account (collection pattern)"],
                            ["Outbound breadth", f"≥ {BREADTH_THRESHOLD} distinct recipients in 24 h", "Money fanned out to many accounts (layering pattern)"],
                            ["Rapid onward movement", f"Money sent out within {int(RAPID_ONWARD_WINDOW.total_seconds() // 60)} min of the first receipt", "Funds passed through quickly instead of staying"]]},
@@ -85,8 +85,8 @@ TOPICS: dict[str, dict[str, Any]] = {
                  "an investigator decides which source is right."),
     },
     "ledger": {
-        "title": "TraceBank pilot ledger",
-        "body": ("Payments made in the Trace.Pay apps are **internal pilot transfers**: both sides are posted in one database "
+        "title": "Trace.Pay wallet ledger",
+        "body": ("Payments made in the Trace.Pay apps are **internal Trace.Pay transfers**: both sides are posted in one database "
                  "transaction (double entry). They are not bank or UPI settlement. Failed attempts are recorded but never count as "
                  "money moved."),
     },
@@ -152,9 +152,9 @@ def ask(db: Session, question: str, account_ref: str | None, screen: str | None)
         if result.get("ok"):
             return {"source": "gemini", "model": result["model"], "answer": result["answer"], "table": result["table"],
                     "follow_ups": result["follow_ups"], "topic": topic_key}
-        fallback_note = f"Gemini could not answer ({result.get('error', 'unknown error')[:160]}). Showing the built-in explanation."
+        fallback_note = f"The AI could not answer ({result.get('error', 'unknown error')[:160]}). Showing the built-in explanation."
     else:
-        fallback_note = "AI answers need a Gemini key. Showing the built-in explanation."
+        fallback_note = "AI answers need a Claude or Gemini key. Showing the built-in explanation."
     topic = TOPICS[topic_key]
     table = topic.get("table")
     if account_ref and facts.get("account_facts"):
@@ -163,7 +163,7 @@ def ask(db: Session, question: str, account_ref: str | None, screen: str | None)
                  "rows": [["Received", f"₹{af['received_total']} in {af['received_count']} transfers"],
                           ["Sent", f"₹{af['sent_total']} in {af['sent_count']} transfers"],
                           ["Distinct senders / recipients", f"{af['unique_senders']} / {af['unique_receivers']}"],
-                          ["rules-v1 at last activity", str(af.get("rules_level_at_last_activity") or "—")],
+                          ["TraceSense Core at last activity", str(af.get("rules_level_at_last_activity") or "—")],
                           ["Accounts within 2 hops", str(af["graph_2_hops"]["accounts"])]]}
     return {"source": "built-in", "answer": f"_{fallback_note}_\n\n### {topic['title']}\n{topic['body']}", "table": table,
             "follow_ups": [TOPICS[k]["title"] for k in TOPICS if k != topic_key][:3], "topic": topic_key}
@@ -210,8 +210,8 @@ def build_report(db: Session, account_ref: str, *, hops: int = 2, include_ai_sum
         "sources": sources,
         "limitations": [
             "Built only from records persisted in Trace.Pay; transfers outside these datasets are not visible.",
-            "rules-v1 results are advisories based on simple patterns, not findings of fraud.",
-            "TraceBank transfers are internal pilot postings, not bank or UPI settlement.",
+            "TraceSense Core results are advisories based on simple patterns, not findings of fraud.",
+            "Trace.Pay wallet transfers are internal ledger postings, not bank or UPI settlement.",
             "Normalised records contain interpreted values (e.g. derived counterparties or ambiguous dates); check the source row.",
         ],
     }

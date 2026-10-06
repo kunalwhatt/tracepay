@@ -44,7 +44,7 @@ export function VolumeChart({series = [], height = 210, compact = false, mode = 
   </div>;
 }
 
-/** Latest rules-v1 level per recipient, as a single proportional bar. */
+/** Latest TraceSense Core level per recipient, as a single proportional bar. */
 export function RiskMix({levels = {}}) {
   const total = RISK_LEVELS.reduce((s, [k]) => s + (levels[k] || 0), 0);
   if (!total) return <div className="chart-empty dark">No recipients assessed yet. Assessments appear after a payer or investigator checks a recipient.</div>;

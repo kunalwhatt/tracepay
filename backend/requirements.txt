@@ -20,3 +20,4 @@ google-genai>=1.30,<2
 azure-eventhub>=5.15,<6
 azure-storage-blob>=12.25,<13
 azure-identity>=1.19,<2
+anthropic>=0.40

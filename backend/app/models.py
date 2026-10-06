@@ -1,3 +1,4 @@
+from decimal import Decimal
 from datetime import datetime, timezone
 from sqlalchemy import String, DateTime, Numeric, ForeignKey, Text, Boolean, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -204,3 +205,32 @@ class SourceConflict(Base):
     incoming_json: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="UNRESOLVED")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Complaint(Base):
+    """A victim's report: who they paid, how much and when. Seeds TraceRank and starts a TraceFlow trace."""
+    __tablename__ = "complaints"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    complaint_ref: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    victim_name: Mapped[str] = mapped_column(String(160))
+    victim_account: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    paid_to: Mapped[str] = mapped_column(String(255), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    scam_type: Mapped[str] = mapped_column(String(60), default="unknown")
+    description: Mapped[str] = mapped_column(Text, default="")
+    matched_transaction_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="OPEN")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AccountLabel(Base):
+    """An investigator's decision about an account: confirmed fraud, not suspicious, or watch."""
+    __tablename__ = "account_labels"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_ref: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(24))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
