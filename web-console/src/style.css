@@ -559,3 +559,19 @@ nav button .nav-count{background:var(--violet);font-size:10px}
 .member-cell{display:flex;gap:10px;align-items:center}.member-cell>span{display:flex;flex-direction:column}
 .member-photo{width:40px;height:40px;border-radius:50%;object-fit:cover;flex:none;border:2px solid var(--lime)}
 .member-photo.initials{display:grid;place-items:center;background:var(--lav);color:var(--violet);font-weight:800;font-size:13px;border-color:transparent}
+
+/* ===== Safety Center ===== */
+.live-dot.off{background:#E3A127;box-shadow:none;animation:none}
+.sf-search{display:flex;gap:12px;align-items:center;margin-bottom:14px}
+.sf-search input{flex:1;height:50px;border:1px solid var(--line);border-radius:16px;padding:0 16px;font:inherit;font-size:15px;outline:none}
+.sf-search input:focus{border-color:var(--violet)}
+.sf-verdict{display:grid;gap:12px}
+.sf-head{display:flex;gap:22px;align-items:center;flex-wrap:wrap}
+.sf-who{flex:1;min-width:260px;display:grid;gap:6px}.sf-who h3{font-size:22px;display:flex;gap:8px;align-items:center}
+.sf-who p{margin:0;font-size:14px;line-height:1.5}.sf-tick{color:#1D9BF0}
+.sf-chips{display:flex;flex-wrap:wrap;gap:6px}.sf-chips span{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;background:#F4F1FF;border-radius:99px;padding:5px 10px}
+.fam.community{background:#FFE2DD;color:#B3261E}.fam.trust{background:#DFF5E1;color:#2E7D32}
+.sf-report{display:flex;gap:12px;align-items:flex-start;padding:12px 4px;border-bottom:1px solid #F3EFFF}
+.sf-report>svg{flex:none;margin-top:2px;color:var(--violet)}.sf-report>div{flex:1;min-width:0}
+.sf-report small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px}.sf-report p{margin:6px 0 0;font-size:13px}
+.sf-actions{display:flex;gap:6px}

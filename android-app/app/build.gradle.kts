@@ -3,7 +3,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "tech.tracepay.android"
     compileSdk = 35
-    defaultConfig { applicationId = "tech.tracepay.android"; minSdk = 26; targetSdk = 35; versionCode = 51; versionName = "5.1.0" }
+    defaultConfig { applicationId = "tech.tracepay.android"; minSdk = 26; targetSdk = 35; versionCode = 52; versionName = "5.2.0" }
     buildTypes {
         // Debug talks to the development Mac over the LAN; cleartext HTTP is allowed only here.
         getByName("debug") {

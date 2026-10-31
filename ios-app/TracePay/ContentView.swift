@@ -808,6 +808,9 @@ struct PayFlowScreen: View {
     @State private var recipient: PilotRecipient?
     @State private var amount = ""
     @State private var risk: RiskResponse?
+    @State private var look: SafetyLookup?
+    @State private var showRisk = false
+    @State private var showReport = false
     @State private var result: PilotTransferResponse?
     @State private var message = ""
     @State private var busy = false
@@ -892,6 +895,18 @@ struct PayFlowScreen: View {
                 if let risk {
                     let style = RiskStyle(level: risk.level)
                     if let shield = risk.shield, !shield.reasons.isEmpty { ShieldCardView(shield: shield) }
+                    if let look {
+                        Button { showRisk = true } label: {
+                            Label("See why: TraceScore \(look.score.map(String.init) ?? "–")/100 · \(look.verdict.title)", systemImage: "gauge.with.dots.needle.67percent")
+                                .font(.system(size: 14, weight: .bold)).foregroundStyle(TP.coral).padding(.horizontal, 14).padding(.vertical, 10).background(TP.coralSoft, in: Capsule())
+                        }
+                        .sheet(isPresented: $showRisk) {
+                            RiskSheetView(look: look, payLabel: "Continue to pay ₹\(amount)", onPay: { showRisk = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { authenticate() } },
+                                          onCancel: { showRisk = false }, onReport: { showRisk = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { showReport = true } })
+                            .presentationDetents([.large])
+                        }
+                        .sheet(isPresented: $showReport) { ReportSheetView(ref: look.ref) { sent in showReport = false; if sent { message = "Thanks. Your report was sent for review." } } }
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         Label(style.label, systemImage: style.icon).font(.system(size: 13, weight: .heavy)).foregroundStyle(style.tint)
                         Text(style.headline).font(.system(size: 28, weight: .heavy, design: .rounded)).foregroundStyle(TP.ink)
@@ -1007,8 +1022,10 @@ struct PayFlowScreen: View {
         defer { busy = false }
         do {
             risk = try await session.assess(recipientRef: recipient.vpa_id, amount: amountValue)
+            look = try? await session.lookup(ref: recipient.vpa_id, amount: amountValue)
             idempotencyKey = UUID().uuidString   // a new attempt starts here
             stage = .review
+            showRisk = look != nil
         } catch let failure {
             message = failure.localizedDescription
         }
@@ -1094,6 +1111,7 @@ struct ScanQRScreen: View {
     @State private var copied = false
     @State private var line = false
     @State private var scanKey = 0
+    @State private var externalQR: ExternalQR?
 
     private var qrPayload: String {
         let vpa = session.pilotProfile?.vpa_id ?? ""
@@ -1102,7 +1120,8 @@ struct ScanQRScreen: View {
     }
 
     var body: some View {
-        if mode == 0 { cameraView } else { qrBody }
+        Group { if mode == 0 { cameraView } else { qrBody } }
+            .fullScreenCover(item: $externalQR) { item in ExternalPayView(raw: item.raw) { externalQR = nil; scanKey += 1 } }
     }
 
     /// Tapping Scan opens the camera straight away; the animated frame and "Import from photos" live inside it.
@@ -1111,6 +1130,8 @@ struct ScanQRScreen: View {
             QRScannerSheet(onScan: { raw in
                 if let id = TracePayID.normalize(raw) {
                     message = ""; payPrefill = id; tab = .pay
+                } else if UPIQR.parse(raw) != nil {
+                    externalQR = ExternalQR(raw: raw)
                 } else {
                     message = "That QR is not a Trace.Pay ID. Trace.Pay only pays name@tracepay accounts."
                     Haptic.error()
@@ -1149,6 +1170,8 @@ struct ScanQRScreen: View {
                 showScanner = false
                 if let id = TracePayID.normalize(raw) {
                     message = ""; payPrefill = id; tab = .pay
+                } else if UPIQR.parse(raw) != nil {
+                    externalQR = ExternalQR(raw: raw)
                 } else {
                     message = "That QR is not a Trace.Pay ID. Trace.Pay only pays name@tracepay accounts."
                     Haptic.error()
@@ -1503,5 +1526,245 @@ struct ShieldCardView: View {
         }
         .padding(16).frame(maxWidth: .infinity, alignment: .leading)
         .background(fill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+// MARK: - Safety layer views
+
+func bandColor(_ band: String) -> Color {
+    switch band { case "high_review": return Color(hex: 0xB3261E); case "review": return Color(hex: 0xE5482F)
+    case "watch": return Color(hex: 0xE3A127); case "low": return Color(hex: 0x3D9A00); default: return Color(hex: 0x8A82A8) }
+}
+
+/// Semicircle gauge that sweeps to the score while the number counts up.
+struct RiskGaugeView: View {
+    let score: Int?; let band: String
+    @State private var progress: Double = 0
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Circle().trim(from: 0, to: 0.5).stroke(TP.coralSoft, style: StrokeStyle(lineWidth: 16, lineCap: .round)).rotationEffect(.degrees(180))
+            Circle().trim(from: 0, to: 0.5 * progress).stroke(bandColor(band), style: StrokeStyle(lineWidth: 16, lineCap: .round)).rotationEffect(.degrees(180))
+            VStack(spacing: 0) {
+                Text(score == nil ? "–" : "\(Int((progress * 100).rounded()))").font(.system(size: 42, weight: .heavy, design: .rounded))
+                    .foregroundStyle(bandColor(band)).contentTransition(.numericText())
+                Text("TraceScore / 100").font(.system(size: 11)).foregroundStyle(TP.muted)
+            }.offset(y: 4)
+        }
+        .frame(width: 190, height: 190).frame(height: 112, alignment: .top).clipped()
+        .onAppear { withAnimation(.easeOut(duration: 1.1)) { progress = Double(score ?? 0) / 100 } }
+    }
+}
+
+/// The pop-up shown before every payment: score, verdict, every factor (animated in one by one), what would change it.
+struct RiskSheetView: View {
+    let look: SafetyLookup; let payLabel: String
+    let onPay: () -> Void; let onCancel: () -> Void; let onReport: () -> Void
+    @State private var shown = 0
+    private var maxPoints: Int { max(1, look.factors.map { abs($0.points) }.max() ?? 1) }
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Capsule().fill(TP.line).frame(width: 40, height: 5).padding(.top, 10)
+                HStack(spacing: 6) {
+                    Text(look.display_name ?? look.ref).font(.system(size: 20, weight: .heavy, design: .rounded)).foregroundStyle(TP.ink)
+                    if look.merchant?.verified == true { Image(systemName: "checkmark.seal.fill").foregroundStyle(Color(hex: 0x1D9BF0)) }
+                }
+                Text(look.ref).font(.system(size: 12)).foregroundStyle(TP.muted)
+                RiskGaugeView(score: look.score, band: look.band)
+                Text(look.verdict.title).font(.system(size: 21, weight: .heavy, design: .rounded)).foregroundStyle(bandColor(look.band))
+                Text(look.verdict.advice).font(.system(size: 13)).multilineTextAlignment(.center).foregroundStyle(TP.ink)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach([look.member ? "Trace.Pay member" : "External UPI ID", "\(look.community.reports) report(s)",
+                                 "\(look.history.records) record(s)", "Confidence \(Int(look.confidence * 100))%"], id: \.self) { chip in
+                            Text(chip).font(.system(size: 11)).padding(.horizontal, 10).padding(.vertical, 6).background(TP.coralSoft, in: Capsule())
+                        }
+                    }
+                }
+                if let shield = look.shield, !shield.reasons.isEmpty { ShieldCardView(shield: shield) }
+                Text("Why this score").font(.system(size: 15, weight: .bold)).frame(maxWidth: .infinity, alignment: .leading)
+                if look.factors.isEmpty { Text("No warning or trust signals found.").font(.system(size: 13)).foregroundStyle(TP.muted).frame(maxWidth: .infinity, alignment: .leading) }
+                ForEach(Array(look.factors.enumerated()), id: \.element.code) { index, factor in
+                    if index < shown { FactorRowView(factor: factor, maxPoints: maxPoints).transition(.move(edge: .bottom).combined(with: .opacity)) }
+                }
+                if !look.counterfactuals.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("What would change it", systemImage: "lightbulb.fill").font(.system(size: 14, weight: .bold)).foregroundStyle(TP.coral)
+                        ForEach(look.counterfactuals, id: \.self) { Text($0).font(.system(size: 12.5)).foregroundStyle(TP.ink) }
+                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(TP.coralSoft.opacity(0.6), in: RoundedRectangle(cornerRadius: 18))
+                }
+                Button(action: onPay) {
+                    Text(payLabel).font(.system(size: 16, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 16)
+                        .background(["high_review", "review"].contains(look.band) ? bandColor(look.band) : TP.coral, in: RoundedRectangle(cornerRadius: 18))
+                }
+                HStack(spacing: 10) {
+                    Button(action: onCancel) { Text("Cancel").font(.system(size: 15, weight: .bold)).foregroundStyle(TP.ink).frame(maxWidth: .infinity).padding(.vertical, 14)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(TP.line)) }
+                    Button(action: onReport) { Label("Report", systemImage: "flag.fill").font(.system(size: 15, weight: .bold)).foregroundStyle(TP.red).frame(maxWidth: .infinity).padding(.vertical, 14)
+                        .background(Color(hex: 0xFFE2DD), in: RoundedRectangle(cornerRadius: 16)) }
+                }
+                Text("Advisory only. You decide whether to pay.").font(.system(size: 11)).foregroundStyle(TP.muted).padding(.bottom, 16)
+            }.padding(.horizontal, 20)
+        }
+        .background(TP.paper)
+        .task {
+            shown = 0
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            for i in look.factors.indices { try? await Task.sleep(nanoseconds: 120_000_000); withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { shown = i + 1 } }
+        }
+    }
+}
+
+struct FactorRowView: View {
+    let factor: SafetyFactor; let maxPoints: Int
+    @State private var grow: CGFloat = 0
+    private var tint: Color { factor.points < 0 ? TP.green : Color(hex: 0xE5482F) }
+    private var family: String { ["core": "Core", "community": "Community", "trust": "Trust"][factor.family] ?? "Behaviour" }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(family).font(.system(size: 10, weight: .bold)).foregroundStyle(TP.coral).padding(.horizontal, 6).padding(.vertical, 2).background(TP.coralSoft, in: RoundedRectangle(cornerRadius: 6))
+                Text(factor.label).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(TP.ink)
+                Spacer()
+                Text("\(factor.points > 0 ? "+" : "")\(factor.points)").font(.system(size: 14, weight: .heavy)).foregroundStyle(tint)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(TP.coralSoft)
+                    Capsule().fill(tint).frame(width: geo.size.width * grow)
+                }
+            }.frame(height: 7)
+            if !factor.detail.isEmpty { Text(factor.detail).font(.system(size: 11.5)).foregroundStyle(TP.muted) }
+        }
+        .padding(12).background(Color(hex: 0xFAF8FF), in: RoundedRectangle(cornerRadius: 16))
+        .onAppear { withAnimation(.easeOut(duration: 0.7)) { grow = CGFloat(abs(factor.points)) / CGFloat(maxPoints) } }
+    }
+}
+
+struct ReportSheetView: View {
+    @EnvironmentObject private var session: TracePaySession
+    let ref: String; let onDone: (Bool) -> Void
+    @State private var category = "scam_payment"
+    @State private var details = ""
+    @State private var amount = ""
+    @State private var busy = false
+    @State private var error = ""
+    private let categories = [("scam_payment", "Scam payment"), ("task_scam", "Task scam"), ("investment_scam", "Investment scam"), ("fake_merchant", "Fake shop"),
+                              ("loan_app", "Loan app"), ("impersonation", "Impersonation"), ("lottery_prize", "Prize scam"), ("other", "Other")]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Report this account").font(.system(size: 21, weight: .heavy, design: .rounded))
+            Text(ref).font(.system(size: 12)).foregroundStyle(TP.muted)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) { ForEach(categories, id: \.0) { item in
+                    Button { category = item.0 } label: { Text(item.1).font(.system(size: 13, weight: .bold)).foregroundStyle(TP.ink).padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(category == item.0 ? TP.lime : TP.coralSoft, in: Capsule()) }
+                } }
+            }
+            TextField("What happened? (optional)", text: $details, axis: .vertical).lineLimit(3...5).padding(12).background(TP.ivory, in: RoundedRectangle(cornerRadius: 14))
+            TextField("Amount lost, ₹ (optional)", text: $amount).keyboardType(.decimalPad).padding(12).background(TP.ivory, in: RoundedRectangle(cornerRadius: 14))
+            if !error.isEmpty { Text(error).font(.system(size: 13)).foregroundStyle(TP.red) }
+            Button {
+                busy = true
+                Task { do { try await session.reportScam(ref: ref, category: category, description: details, amount: amount); onDone(true) } catch { self.error = error.localizedDescription; busy = false } }
+            } label: { Text(busy ? "Sending…" : "Send report").font(.system(size: 16, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 16).background(TP.red, in: RoundedRectangle(cornerRadius: 18)) }
+                .disabled(busy)
+            Text("Investigators review every report. Confirmed reports warn everyone who tries to pay this account.").font(.system(size: 11)).foregroundStyle(TP.muted)
+            Spacer()
+        }.padding(20).presentationDetents([.medium, .large])
+    }
+}
+
+struct ExternalQR: Identifiable { let id = UUID(); let raw: String }
+
+/// Pay any UPI QR (GPay, PhonePe, Paytm…): check → risk pop-up → hand off to the UPI app → confirm on return → record.
+struct ExternalPayView: View {
+    @EnvironmentObject private var session: TracePaySession
+    @Environment(\.scenePhase) private var scenePhase
+    let raw: String; let onDone: () -> Void
+    @State private var amount = ""
+    @State private var look: SafetyLookup?
+    @State private var showRisk = false
+    @State private var showReport = false
+    @State private var awaitingReturn = false
+    @State private var askConfirm = false
+    @State private var app = "upi"
+    @State private var busy = false
+    @State private var message = ""
+    @State private var recorded: String?
+    private var qr: [String: String]? { UPIQR.parse(raw) }
+    private let apps: [(String, String)] = [("Google Pay", "tez://upi/pay"), ("PhonePe", "phonepe://pay"), ("Paytm", "paytmmp://pay"), ("Any UPI app", "upi://pay")]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Button(action: onDone) { Image(systemName: "chevron.left").font(.system(size: 16, weight: .bold)).foregroundStyle(TP.ink).frame(width: 42, height: 42).background(TP.paper, in: Circle()) }
+                    Text("Pay any UPI QR").font(.system(size: 21, weight: .heavy, design: .rounded))
+                }
+                if let qr {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("PAYING").font(.system(size: 11, weight: .bold)).foregroundStyle(TP.muted)
+                        Text(qr["pn"] ?? qr["pa"] ?? "").font(.system(size: 23, weight: .heavy, design: .rounded))
+                        Text(qr["pa"] ?? "").font(.system(size: 13)).foregroundStyle(TP.muted)
+                    }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(TP.paper, in: RoundedRectangle(cornerRadius: 24))
+                    TextField("Amount (₹)", text: $amount).keyboardType(.decimalPad).font(.system(size: 22, weight: .bold)).padding(16).background(TP.paper, in: RoundedRectangle(cornerRadius: 18))
+                    if !message.isEmpty { Text(message).font(.system(size: 13)).foregroundStyle(TP.red) }
+                    if let recorded { Label(recorded == "SUCCESS" ? "Payment recorded in your activity." : "Recorded as \(recorded.lowercased()).", systemImage: "checkmark.circle.fill").foregroundStyle(TP.green).font(.system(size: 14, weight: .bold)) }
+                    Text("Choose the app to pay with").font(.system(size: 14, weight: .bold))
+                    ForEach(apps, id: \.0) { item in
+                        Button { app = item.0; Task { await check() } } label: {
+                            HStack { Text(item.0).font(.system(size: 15, weight: .bold)); Spacer(); Image(systemName: "arrow.up.right") }
+                                .foregroundStyle(TP.ink).padding(16).background(TP.paper, in: RoundedRectangle(cornerRadius: 16))
+                        }.disabled(busy)
+                    }
+                    Text("Trace.Pay checks the account first and shows the risk. Your UPI PIN is only entered in your UPI app. If an app declines a payment started from another app, open it and scan the same QR there.")
+                        .font(.system(size: 12)).foregroundStyle(TP.muted)
+                } else { Text("This QR has no valid UPI ID.").foregroundStyle(TP.red) }
+            }.padding(20)
+        }
+        .background(TP.ivory.ignoresSafeArea())
+        .onAppear { amount = qr?["am"] ?? "" }
+        .sheet(isPresented: $showRisk) {
+            if let look { RiskSheetView(look: look, payLabel: "Pay ₹\(amount) with \(app)", onPay: { showRisk = false; openApp() },
+                                        onCancel: { showRisk = false }, onReport: { showRisk = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showReport = true } })
+                .presentationDetents([.large]) }
+        }
+        .sheet(isPresented: $showReport) { ReportSheetView(ref: qr?["pa"] ?? raw) { sent in showReport = false; if sent { message = "Thanks. Your report was sent for review." } } }
+        .onChange(of: scenePhase) { _, phase in if phase == .active && awaitingReturn { awaitingReturn = false; askConfirm = true } }
+        .alert("Did the payment go through?", isPresented: $askConfirm) {
+            Button("Yes, I paid") { record("SUCCESS") }
+            Button("No", role: .cancel) { record("CANCELLED") }
+        } message: { Text("UPI apps on iPhone don't report back, so confirm to record it.") }
+    }
+
+    @MainActor private func check() async {
+        guard let value = Decimal(string: amount), value > 0 else { message = "Enter the amount first."; return }
+        busy = true; message = ""; defer { busy = false }
+        do { look = try await session.lookup(ref: raw, amount: value); showRisk = true } catch { message = error.localizedDescription }
+    }
+
+    private func openApp() {
+        guard let qr, let base = apps.first(where: { $0.0 == app })?.1, var components = URLComponents(string: base) else { return }
+        components.queryItems = [URLQueryItem(name: "pa", value: qr["pa"]), URLQueryItem(name: "pn", value: look?.display_name ?? qr["pn"] ?? qr["pa"]),
+                                 URLQueryItem(name: "am", value: amount), URLQueryItem(name: "cu", value: "INR"), URLQueryItem(name: "tn", value: qr["tn"] ?? "Checked with Trace.Pay")]
+        guard let url = components.url else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            UIApplication.shared.open(url) { ok in
+                if ok { awaitingReturn = true } else { message = "\(app) is not installed. Choose another app." }
+            }
+        }
+    }
+
+    private func record(_ status: String) {
+        guard let qr else { return }
+        Task {
+            do {
+                try await session.recordExternalPayment(ExternalPaymentBody(payee: qr["pa"] ?? raw, payee_name: look?.display_name ?? qr["pn"], amount: amount,
+                                                                            app: app.lowercased(), status: status, source: "manual", upi_txn_id: nil,
+                                                                            risk_score: look?.score, risk_band: look?.band))
+                recorded = status
+            } catch { message = error.localizedDescription }
+        }
     }
 }

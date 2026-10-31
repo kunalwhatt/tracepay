@@ -286,6 +286,8 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
 @Composable fun MainScreen(api:TraceApi,activity:MainActivity,profile:Profile,onLogout:()->Unit){
  var tab by remember{mutableStateOf(MainTab.Home)}
  var qrMode by remember{mutableStateOf(0)}
+ var externalQr by remember{mutableStateOf<String?>(null)}
+ externalQr?.let{q->ExternalPayScreen(api,q,onDone={externalQr=null});return}
  var prefill by remember{mutableStateOf("")}
  var wallet by remember{mutableStateOf<Wallet?>(null)}
  var transfers by remember{mutableStateOf<List<Transfer>>(emptyList())}
@@ -296,7 +298,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
   AnimatedContent(targetState=tab,label="tabs"){t->when(t){
    MainTab.Home->HomeScreen(api,profile,wallet,transfers,onNavigate={tab=it},onQrMode={qrMode=it},onPay={prefill=it;tab=MainTab.Pay})
    MainTab.Pay->PayFlow(api,activity,profile,wallet,prefill,onConsumePrefill={prefill=""},onNavigate={tab=it},onQrMode={qrMode=it},refresh=refresh)
-   MainTab.Qr->ScanQrScreen(activity,profile,qrMode,onMode={qrMode=it},onNavigate={tab=it},onPay={prefill=it;tab=MainTab.Pay})
+   MainTab.Qr->ScanQrScreen(activity,profile,qrMode,onMode={qrMode=it},onNavigate={tab=it},onPay={prefill=it;tab=MainTab.Pay},onExternal={externalQr=it})
    MainTab.Activity->ActivityScreen(profile,transfers)
    MainTab.Profile->ProfileMain(profile,api.email(),onShowQr={qrMode=1;tab=MainTab.Qr},onLogout=onLogout)}}
   if(tab!=MainTab.Pay&&!(tab==MainTab.Qr&&qrMode==0))TPTabBar(tab,{tab=it},Modifier.align(Alignment.BottomCenter))}}
@@ -368,10 +370,13 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
  fun find(){val id=normalizeTracePayId(input);if(id==null){message="Trace.Pay IDs look like name@tracepay. Other UPI handles are not Trace.Pay accounts.";return}
   if(id==profile.vpa_id){message="That's your own Trace.Pay ID. Choose someone else.";return}
   busy=true;message="";scope.launch{try{recipientName=api.recipient(id);recipientVpa=id;input=id;amount="";stage=PayStage.Amount}catch(e:Exception){message=e.message?:"Recipient not found"};busy=false}}
+ var look by remember{mutableStateOf<SafetyLookup?>(null)}
+ var riskSheet by remember{mutableStateOf(false)}
+ var reportSheet by remember{mutableStateOf(false)}
  fun check(){val v=amount.toBigDecimalOrNull()?:BigDecimal.ZERO;val bal=wallet?.balance?.toBigDecimalOrNull()
   if(v>BigDecimal("100000")){message="Each payment is limited to ₹1,00,000.";return}
   if(bal!=null&&v>bal){message="That's more than your Trace.Pay balance of ${money(wallet?.balance)}.";return}
-  busy=true;message="";scope.launch{try{risk=api.risk(recipientVpa,amount);attemptKey=UUID.randomUUID().toString();stage=PayStage.Review}catch(e:Exception){message=e.message?:"Could not assess recipient"};busy=false}}
+  busy=true;message="";scope.launch{try{risk=api.risk(recipientVpa,amount);look=runCatching{api.lookup(recipientVpa,amount)}.getOrNull();attemptKey=UUID.randomUUID().toString();stage=PayStage.Review;riskSheet=look!=null}catch(e:Exception){message=e.message?:"Could not assess recipient"};busy=false}}
  fun submit(){busy=true;scope.launch{try{val t=api.transfer(recipientVpa,amount,"",attemptKey);attemptKey=UUID.randomUUID().toString();result=t;stage=PayStage.Result;refresh()}catch(e:Exception){message="${e.message?:"Network error."} The payment was not confirmed; retrying is safe.";stage=PayStage.Review};busy=false}}
  fun authorise(){message="";stage=PayStage.Authorising;activity.biometric(onSuccess={submit()},onError={err->message=err;stage=PayStage.Review})}
  LaunchedEffect(prefill){if(prefill.isNotBlank()){input=prefill;onConsumePrefill();find()}}
@@ -399,6 +404,9 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
      BackHeader("RISK REVIEW",CoralSoft){message="";stage=PayStage.Amount}
      risk?.let{r->val s=riskStyle(r.level)
       if(r.shieldReasons.isNotEmpty())ShieldCard(r.shieldLevel,r.shieldReasons)
+      look?.let{l->Text("See why: TraceScore ${l.score?:"–"}/100 · ${l.title}",color=Coral,fontWeight=FontWeight.Bold,fontSize=14.sp,modifier=Modifier.clip(RoundedCornerShape(14.dp)).background(CoralSoft).clickable{riskSheet=true}.padding(horizontal=14.dp,vertical=10.dp))}
+      if(riskSheet)look?.let{l->RiskSheet(l,"Continue to pay ${money(amount)}",onPay={riskSheet=false;authorise()},onCancel={riskSheet=false},onReport={riskSheet=false;reportSheet=true})}
+      if(reportSheet)ReportSheet(api,recipientVpa){sent->reportSheet=false;if(sent)message="Thanks. Your report was sent for review."}
       Column(Modifier.fillMaxWidth().background(s.fill,RoundedCornerShape(24.dp)).padding(18.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){Icon(s.icon,null,tint=s.tint,modifier=Modifier.size(18.dp));Text(s.label,fontSize=13.sp,fontWeight=FontWeight.ExtraBold,color=s.tint)};Text(s.headline,fontSize=27.sp,fontWeight=FontWeight.ExtraBold,color=Ink,lineHeight=31.sp)}
       TPCard{Text("Why this category",fontSize=15.sp,fontWeight=FontWeight.Bold,color=Ink);r.reasons.forEach{Text(it,fontSize=13.sp,color=Ink,lineHeight=18.sp,modifier=Modifier.padding(top=8.dp))}}
       Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){StatTile("${r.observed_transaction_count}","Records",Modifier.weight(1f));StatTile(r.rule_version,"Rule",Modifier.weight(1f));StatTile(shortTime(r.data_as_of),"As of",Modifier.weight(1f))}
@@ -428,7 +436,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
     if(ok){TPPrimary("Back home"){reset(true)};TPSecondary("View activity"){reset(false);onNavigate(MainTab.Activity)}}
     else{TPPrimary("Try again"){message="";result=null;stage=PayStage.Amount};TPSecondary("Back home"){reset(true)}}}}}}
 
-@Composable fun ScanQrScreen(activity:MainActivity,profile:Profile,mode:Int,onMode:(Int)->Unit,onNavigate:(MainTab)->Unit,onPay:(String)->Unit){
+@Composable fun ScanQrScreen(activity:MainActivity,profile:Profile,mode:Int,onMode:(Int)->Unit,onNavigate:(MainTab)->Unit,onPay:(String)->Unit,onExternal:(String)->Unit={}){
  val ctx=LocalContext.current
  var message by remember{mutableStateOf("")}
  var copied by remember{mutableStateOf(false)}
@@ -436,7 +444,7 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
  val payload=remember(profile.vpa_id){"tracepay://pay?pa=${profile.vpa_id}&pn=${Uri.encode(profile.full_name)}"}
  val qr=remember(payload){qrBitmap(payload,720)}
  val line by rememberInfiniteTransition(label="scan").animateFloat(-100f,100f,infiniteRepeatable(tween(1800),RepeatMode.Reverse),label="line")
- if(mode==0){QrCameraScreen(onCode={raw->val id=normalizeTracePayId(raw);if(id!=null){onPay(id);null}else "That QR is not a Trace.Pay ID."},onClose={onNavigate(MainTab.Home)},onMyQr={onMode(1)});return}
+ if(mode==0){QrCameraScreen(onCode={raw->val id=normalizeTracePayId(raw);if(id!=null){onPay(id);null}else if(parseUpiQr(raw)!=null){onExternal(raw);null}else "That QR has no UPI ID."},onClose={onNavigate(MainTab.Home)},onMyQr={onMode(1)});return}
  fun startScan(){scan(activity,onResult={raw->val id=normalizeTracePayId(raw);if(id!=null){message="";onPay(id)}else{message="That QR is not a Trace.Pay ID. Trace.Pay only pays name@tracepay accounts."}},onError={message=it})}
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=18.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
   BackHeader("TRACE.PAY QR"){onNavigate(MainTab.Home)}

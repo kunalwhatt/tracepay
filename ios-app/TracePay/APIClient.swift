@@ -440,3 +440,71 @@ enum JWTClaims {
         return Date(timeIntervalSince1970: exp)
     }
 }
+
+// MARK: - Safety layer (lookup any UPI ID, report scams, record payments made in other UPI apps)
+
+struct SafetyFactor: Decodable, Hashable { let code: String; let label: String; let family: String; let points: Int; let detail: String }
+struct SafetyVerdict: Decodable, Hashable { let title: String; let advice: String }
+struct SafetyMerchant: Decodable, Hashable { let display_name: String?; let verified: Bool? }
+struct SafetyCommunity: Decodable, Hashable { let reports: Int; let verified_reports: Int; let complaints: Int }
+struct SafetyHistory: Decodable, Hashable { let records: Int }
+struct SafetyQR: Decodable, Hashable { let name: String?; let amount: String?; let note: String? }
+struct SafetyLookup: Decodable, Identifiable, Hashable {
+    var id: String { ref }
+    let ref: String; let display_name: String?; let member: Bool; let merchant: SafetyMerchant?
+    let score: Int?; let band: String; let verdict: SafetyVerdict; let factors: [SafetyFactor]
+    let confidence: Double; let counterfactuals: [String]; let community: SafetyCommunity; let history: SafetyHistory
+    let qr: SafetyQR?; let shield: ShieldInfo?
+}
+struct ExternalPaymentBody: Encodable {
+    let payee: String; let payee_name: String?; let amount: String; let app: String; let status: String; let source: String
+    let upi_txn_id: String?; let risk_score: Int?; let risk_band: String?
+}
+struct ExternalPaymentRecord: Decodable { let id: Int; let status: String }
+
+extension TracePaySession {
+    /// Truecaller-style check of any UPI ID or UPI QR text, with every factor explained.
+    func lookup(ref: String, amount: Decimal? = nil) async throws -> SafetyLookup {
+        var components = URLComponents(url: baseURL.appending(path: "api/v1/lookup"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "ref", value: ref)] + (amount.map { [URLQueryItem(name: "amount", value: "\($0)")] } ?? [])
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 25
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 401 && token != nil { expireSession() }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = (try? decoder.decode(APIError.self, from: data).detail) ?? "Could not check this account"
+            throw NSError(domain: "Trace.Pay API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: detail])
+        }
+        return try decoder.decode(SafetyLookup.self, from: data)
+    }
+
+    func reportScam(ref: String, category: String, description: String, amount: String) async throws {
+        var body = ["target_ref": ref, "category": category, "description": description]
+        if Decimal(string: amount) != nil { body["amount"] = amount }
+        let _: AnyDecodableIgnored = try await send("/api/v1/community/reports", method: "POST", body: body, authenticated: true)
+    }
+
+    func recordExternalPayment(_ body: ExternalPaymentBody) async throws {
+        let _: ExternalPaymentRecord = try await send("/api/v1/external-payments", method: "POST", body: body, authenticated: true)
+    }
+}
+
+/// Accepts any JSON response when only success matters.
+struct AnyDecodableIgnored: Decodable { init(from decoder: Decoder) throws {} }
+
+/// Any UPI QR (GPay, PhonePe, Paytm, BHIM, bank apps) or bare UPI ID.
+enum UPIQR {
+    static func parse(_ raw: String) -> [String: String]? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var fields: [String: String] = [:]
+        if text.lowercased().hasPrefix("upi://"), let items = URLComponents(string: text)?.queryItems {
+            for item in items { if let v = item.value, !v.isEmpty { fields[item.name.lowercased()] = v } }
+        } else { fields["pa"] = text }
+        guard let pa = fields["pa"]?.lowercased(),
+              pa.range(of: #"^[a-z0-9][a-z0-9._-]{1,63}@[a-z][a-z0-9.]{1,40}$"#, options: .regularExpression) != nil else { return nil }
+        fields["pa"] = pa
+        return fields
+    }
+}

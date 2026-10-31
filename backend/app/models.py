@@ -124,6 +124,7 @@ class PilotMerchant(Base):
     category: Mapped[str] = mapped_column(String(80), default="General")
     location: Mapped[str] = mapped_column(String(160), default="")
     status: Mapped[str] = mapped_column(String(24), default="active")
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 class PilotTransfer(Base):
@@ -234,3 +235,38 @@ class AccountLabel(Base):
     reason: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ScamReport(Base):
+    """A community report that an account is a scam (Truecaller-style). Moderated by investigators."""
+    __tablename__ = "scam_reports"
+    __table_args__ = (UniqueConstraint("reporter_user_id", "target_ref", name="uq_scam_report_reporter_target"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    target_ref: Mapped[str] = mapped_column(String(255), index=True)
+    target_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    category: Mapped[str] = mapped_column(String(40), default="other")
+    description: Mapped[str] = mapped_column(Text, default="")
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending | verified | rejected
+    reporter_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ExternalPayment(Base):
+    """A payment a member made in another UPI app (GPay, PhonePe, Paytm ...), recorded after a Trace.Pay check."""
+    __tablename__ = "external_payments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    payer_vpa: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payee_vpa: Mapped[str] = mapped_column(String(255), index=True)
+    payee_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    app: Mapped[str] = mapped_column(String(40), default="other")
+    status: Mapped[str] = mapped_column(String(16), default="SUBMITTED")  # SUCCESS | FAILURE | SUBMITTED | CANCELLED
+    source: Mapped[str] = mapped_column(String(24), default="manual")      # upi_response | notification | manual
+    upi_txn_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    risk_score: Mapped[int | None] = mapped_column(nullable=True)
+    risk_band: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    transaction_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

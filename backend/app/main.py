@@ -26,9 +26,11 @@ from .ingestion_service import read_upload, deterministic_mapping, normalize_row
 from .gemini_service import suggest_mapping, enabled as gemini_enabled, status as gemini_status
 from . import schema_agent, assistant as tp_assistant
 from .blob_service import upload_raw as upload_raw_blob
-from .ids import normalize_tracepay_id
+from .ids import normalize_tracepay_id, parse_upi
+from . import community
+from .models import ScamReport, ExternalPayment
 
-APP_VERSION = "5.1.0"
+APP_VERSION = "5.2.0"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
@@ -296,6 +298,7 @@ def startup():
             "ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_end TIMESTAMPTZ",
             "ALTER TABLE pilot_transfers ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE investigation_cases ADD COLUMN IF NOT EXISTS account_ref VARCHAR(255)",
+            "ALTER TABLE pilot_merchants ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE",
         ):
             conn.execute(text(statement))
     Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos")).mkdir(parents=True, exist_ok=True)
@@ -665,6 +668,188 @@ class BenchIn(BaseModel):
 def tracebench_run(body: BenchIn, user: User = Depends(require_roles(*OPS_ROLES))):
     """Run the synthetic fraud world and every experiment. Uses generated data only; nothing is stored."""
     return tracebench.run(seed=body.seed, quick=body.quick)
+
+
+# ------------------------------------------------------------------------------------------
+# Safety layer: lookup any UPI ID, community reports, verified merchants, external payments
+# ------------------------------------------------------------------------------------------
+
+def _merchant_json(m: PilotMerchant | None) -> dict | None:
+    if not m:
+        return None
+    return {"id": m.id, "display_name": m.display_name, "vpa_id": m.vpa_id, "category": m.category, "location": m.location,
+            "status": m.status, "verified": bool(getattr(m, "verified", False))}
+
+
+@app.get("/api/v1/lookup")
+def lookup_account(ref: str = Query(..., min_length=3, max_length=600), amount: Decimal | None = Query(None, gt=0),
+                   db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Truecaller-style check for any UPI ID or UPI QR (Trace.Pay, GPay, PhonePe, Paytm, BHIM, bank apps).
+
+    Returns one explained safety score: TraceScore behaviour signals plus community reports, complaints,
+    investigator decisions and merchant verification, each with its points. Members see other people's IDs masked.
+    """
+    qr = parse_upi(ref)
+    target = qr["vpa"]
+    if not target:
+        raise HTTPException(400, "That is not a UPI ID or UPI QR code.")
+    ops = user.role in OPS_ROLES
+    member = db.scalar(select(PilotProfile).where(PilotProfile.vpa_id == target))
+    merchant = _merchant_json(db.scalar(select(PilotMerchant).where(PilotMerchant.vpa_id == target)))
+    moves, _ = collect_neighbourhood(db, target, 2, 1200)
+    network = tracesense.network_signals(moves) if moves else {}
+    trace = tracesense.trace_score(target, moves, network=network)
+    reports = db.scalars(select(ScamReport).where(ScamReport.target_ref == target)).all()
+    complaints = db.scalar(select(func.count(Complaint.id)).where(Complaint.paid_to == target)) or 0
+    label_row = db.scalar(select(AccountLabel).where(AccountLabel.account_ref == target))
+    combined = community.combine(trace, community.community_factors(reports, complaints, label_row.label if label_row else None, merchant))
+    if not ops:
+        for f in combined["factors"]:
+            f["detail"] = community.mask(f["detail"])
+    shield = trace_shield(db, user, target, amount) if user.role == "pilot_user" else None
+    mine = [m for m in moves if target in (m.sender, m.receiver) and m.moved_value]
+    active_reports = [r for r in reports if r.status != "rejected"]
+    return {
+        "ref": target, "qr": {k: qr[k] for k in ("name", "amount", "note", "merchant_code", "txn_ref")}, "is_tracepay": qr["is_tracepay"],
+        "display_name": (member.full_name if member else None) or (merchant or {}).get("display_name") or qr["name"],
+        "member": bool(member), "merchant": merchant,
+        "score": combined["score"], "band": combined["band"], "verdict": community.verdict(combined["band"]),
+        "factors": combined["factors"], "confidence": trace.get("confidence", 0.0),
+        "counterfactuals": [community.mask(c) for c in trace.get("counterfactuals", [])] if not ops else trace.get("counterfactuals", []),
+        "community": {"reports": len(active_reports), "verified_reports": sum(1 for r in active_reports if r.status == "verified"),
+                      "categories": sorted({community.CATEGORIES.get(r.category, "Other") for r in active_reports}), "complaints": complaints},
+        "history": {"records": len(mine), "first_seen": min((m.at for m in mine), default=None), "last_seen": max((m.at for m in mine), default=None)},
+        "shield": shield, "engine": "TraceScore + community", "disclaimer": "Advisory only. You decide whether to pay.",
+    }
+
+
+class CommunityReportIn(BaseModel):
+    target_ref: str = Field(min_length=3, max_length=600)
+    category: str = Field(default="other", pattern="^(" + "|".join(community.CATEGORIES) + ")$")
+    description: str = Field(default="", max_length=2000)
+    amount: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"))
+
+
+def _report_json(r: ScamReport, ops: bool) -> dict:
+    return {"id": r.id, "target_ref": r.target_ref, "target_name": r.target_name, "category": r.category,
+            "category_label": community.CATEGORIES.get(r.category, "Other"), "description": r.description if ops else community.mask(r.description),
+            "amount": str(r.amount) if r.amount is not None else None, "status": r.status, "created_at": r.created_at.isoformat(),
+            **({"reporter_user_id": r.reporter_user_id} if ops else {})}
+
+
+@app.post("/api/v1/community/reports", status_code=201)
+async def create_community_report(body: CommunityReportIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Any signed-in user can report a scam account. One report per person per account (updating replaces it)."""
+    qr = parse_upi(body.target_ref)
+    if not qr["vpa"]:
+        raise HTTPException(400, "That is not a UPI ID or UPI QR code.")
+    row = db.scalar(select(ScamReport).where(ScamReport.reporter_user_id == user.id, ScamReport.target_ref == qr["vpa"]))
+    if row:
+        row.category, row.description, row.amount, row.status = body.category, body.description.strip(), body.amount, "pending"
+    else:
+        row = ScamReport(target_ref=qr["vpa"], target_name=qr["name"], category=body.category, description=body.description.strip(),
+                         amount=body.amount, reporter_user_id=user.id)
+        db.add(row)
+    db.add(AuditEvent(actor_user_id=user.id, action="community.report", object_ref=qr["vpa"], detail=json.dumps({"category": body.category})))
+    db.commit(); db.refresh(row)
+    await hub.publish({"type": "community.report", "target_ref": row.target_ref, "category": row.category})
+    return _report_json(row, user.role in OPS_ROLES)
+
+
+@app.get("/api/v1/community/reports")
+def list_community_reports(status: str | None = Query(None, pattern="^(pending|verified|rejected)$"), mine: bool = False,
+                           db: Session = Depends(get_db), user: User = Depends(current_user)):
+    ops = user.role in OPS_ROLES
+    stmt = select(ScamReport).order_by(desc(ScamReport.created_at)).limit(500)
+    if mine or not ops:
+        stmt = stmt.where(ScamReport.reporter_user_id == user.id)
+    if status:
+        stmt = stmt.where(ScamReport.status == status)
+    return [_report_json(r, ops) for r in db.scalars(stmt)]
+
+
+class ModerateIn(BaseModel):
+    status: str = Field(pattern="^(pending|verified|rejected)$")
+
+
+@app.patch("/api/v1/community/reports/{report_id}")
+async def moderate_community_report(report_id: int, body: ModerateIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    row = db.get(ScamReport, report_id)
+    if not row:
+        raise HTTPException(404, "Report not found")
+    row.status = body.status
+    db.add(AuditEvent(actor_user_id=user.id, action="community.moderated", object_ref=row.target_ref, detail=json.dumps({"report": report_id, "status": body.status})))
+    db.commit()
+    await hub.publish({"type": "community.report", "target_ref": row.target_ref, "status": row.status})
+    return _report_json(row, True)
+
+
+class MerchantVerifyIn(BaseModel):
+    verified: bool
+
+
+@app.patch("/api/v1/pilot/merchants/{merchant_id}/verify")
+async def verify_merchant(merchant_id: int, body: MerchantVerifyIn, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    m = db.get(PilotMerchant, merchant_id)
+    if not m:
+        raise HTTPException(404, "Merchant not found")
+    m.verified = body.verified
+    db.add(AuditEvent(actor_user_id=user.id, action="merchant.verified" if body.verified else "merchant.unverified", object_ref=m.vpa_id))
+    db.commit()
+    await hub.publish({"type": "merchant.updated", "vpa_id": m.vpa_id, "verified": body.verified})
+    return _merchant_json(m)
+
+
+class ExternalPaymentIn(BaseModel):
+    payee: str = Field(min_length=3, max_length=600, description="UPI ID or the scanned UPI QR text")
+    payee_name: str | None = Field(default=None, max_length=160)
+    amount: Decimal = Field(gt=0, le=Decimal("1000000"))
+    app: str = Field(default="other", max_length=40)
+    status: str = Field(pattern="^(SUCCESS|FAILURE|SUBMITTED|CANCELLED)$")
+    source: str = Field(default="manual", pattern="^(upi_response|notification|manual)$")
+    upi_txn_id: str | None = Field(default=None, max_length=80)
+    risk_score: int | None = Field(default=None, ge=0, le=100)
+    risk_band: str | None = Field(default=None, max_length=24)
+
+
+@app.post("/api/v1/external-payments", status_code=201)
+async def record_external_payment(body: ExternalPaymentIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Record a payment the member completed in another UPI app. Successful ones become evidence records."""
+    qr = parse_upi(body.payee)
+    if not qr["vpa"]:
+        raise HTTPException(400, "That is not a UPI ID or UPI QR code.")
+    payer = db.scalar(select(PilotProfile.vpa_id).where(PilotProfile.user_id == user.id)) or f"member:{user.id}"
+    row = ExternalPayment(user_id=user.id, payer_vpa=payer, payee_vpa=qr["vpa"], payee_name=body.payee_name or qr["name"], amount=body.amount,
+                          app=body.app.lower()[:40], status=body.status, source=body.source, upi_txn_id=body.upi_txn_id,
+                          risk_score=body.risk_score, risk_band=body.risk_band)
+    db.add(row); db.flush()
+    if body.status == "SUCCESS":
+        ref = ("UPI-" + body.upi_txn_id) if body.upi_txn_id else "EXT-" + uuid4().hex[:16].upper()
+        if not db.scalar(select(Transaction).where(Transaction.transaction_ref == ref[:128])):
+            tx = Transaction(transaction_ref=ref[:128], event_id="EXT-" + uuid4().hex, sender_id=payer, receiver_id=qr["vpa"], amount=body.amount,
+                             currency="INR", occurred_at=datetime.now(timezone.utc), source_id=f"member-app:{row.app}",
+                             source_record_ref=f"external_payment:{row.id}", provenance_status="normalized" if body.source == "manual" else "observed")
+            db.add(tx)
+            row.transaction_ref = tx.transaction_ref
+    db.add(AuditEvent(actor_user_id=user.id, action="external.payment", object_ref=qr["vpa"],
+                      detail=json.dumps({"amount": str(body.amount), "app": row.app, "status": body.status, "source": body.source})))
+    db.commit(); db.refresh(row)
+    await hub.publish({"type": "external.payment", "payee": row.payee_vpa, "amount": str(row.amount), "status": row.status, "app": row.app})
+    return _external_json(row)
+
+
+def _external_json(r: ExternalPayment) -> dict:
+    return {"id": r.id, "payer_vpa": r.payer_vpa, "payee_vpa": r.payee_vpa, "payee_name": r.payee_name, "amount": str(r.amount), "app": r.app,
+            "status": r.status, "source": r.source, "upi_txn_id": r.upi_txn_id, "risk_score": r.risk_score, "risk_band": r.risk_band,
+            "transaction_ref": r.transaction_ref, "created_at": r.created_at.isoformat()}
+
+
+@app.get("/api/v1/external-payments")
+def list_external_payments(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    stmt = select(ExternalPayment).order_by(desc(ExternalPayment.created_at)).limit(300)
+    if user.role not in OPS_ROLES:
+        stmt = stmt.where(ExternalPayment.user_id == user.id)
+    return [_external_json(r) for r in db.scalars(stmt)]
 
 
 @app.get("/api/v1/transactions", response_model=list[TransactionOut])
@@ -1275,7 +1460,7 @@ def list_pilot_users(db: Session = Depends(get_db), user: User = Depends(require
 def list_pilot_merchants(db: Session = Depends(get_db), user: User = Depends(current_user)):
     rows = db.scalars(select(PilotMerchant).order_by(desc(PilotMerchant.created_at))).all()
     return [{"id": m.id, "display_name": m.display_name, "vpa_id": m.vpa_id, "category": m.category,
-        "location": m.location, "status": m.status, "created_at": m.created_at.isoformat()} for m in rows]
+        "location": m.location, "status": m.status, "verified": bool(getattr(m, "verified", False)), "created_at": m.created_at.isoformat()} for m in rows]
 
 @app.post("/api/v1/pilot/merchants", status_code=201)
 async def create_pilot_merchant(body: MerchantIn, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):

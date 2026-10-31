@@ -347,8 +347,8 @@ final class FaceCameraController: UIViewController, AVCaptureVideoDataOutputSamp
     }
 
     func capture() {
-        if let connection = photoOutput.connection(with: .video), connection.isVideoOrientationSupported {
-            connection.videoOrientation = .portrait
+        if let connection = photoOutput.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
+            connection.videoRotationAngle = 90   // portrait
         }
         photoOutput.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)
     }

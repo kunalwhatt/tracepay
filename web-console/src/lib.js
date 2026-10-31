@@ -11,6 +11,8 @@ export async function api(path, options = {}, token) {
   if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   const response = await fetch(API + path, {...options, headers});
   if (!response.ok) {
+    // An expired or revoked session: tell the app so it can sign out cleanly instead of failing silently.
+    if (response.status === 401 && token) window.dispatchEvent(new CustomEvent('tp-session-expired'));
     const detail = await response.json().catch(() => ({}));
     const message = Array.isArray(detail.detail) ? detail.detail.map(d => d.msg).join('; ') : detail.detail;
     throw new Error(message || `Request failed (${response.status})`);
