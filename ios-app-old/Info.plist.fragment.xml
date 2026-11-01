@@ -1,0 +1,5 @@
+<!-- Add these keys to the app target's Info.plist. -->
+<key>NSCameraUsageDescription</key>
+<string>Trace.Pay uses the camera to scan UPI QR codes so it can assess the recipient before opening a compatible payment app.</string>
+<key>TRACEPAY_API_BASE_URL</key>
+<string>https://YOUR-API-DOMAIN</string>

@@ -62,10 +62,13 @@ def community_factors(reports: list, complaints: int, label: str | None, merchan
 
 def combine(trace: dict, extra: list[dict]) -> dict:
     """Merge TraceScore contributions with community and trust factors into one explained score."""
-    factors = [{"code": c["code"], "label": c["label"], "family": c.get("family", "deep"), "points": c["points"], "detail": c.get("detail", "")}
+    factors = [{"code": c["code"], "label": c["label"], "family": c.get("family", "deep"), "points": c["points"], "detail": c.get("detail") or ""}
                for c in trace.get("contributions", [])] + extra
     if trace.get("score") is None and not extra:
-        return {"score": None, "band": "insufficient_information", "factors": []}
+        # No history yet: still return a number so the meter always has something to show.
+        return {"score": 20, "band": "insufficient_information",
+                "factors": [{"code": "NEW_ACCOUNT", "label": "No payment history yet", "family": "core", "points": 20,
+                             "detail": "trace.pay has not seen this account before. Pay only people you know."}]}
     score = max(0, min(100, sum(f["points"] for f in factors)))
     factors.sort(key=lambda f: -abs(f["points"]))
     return {"score": score, "band": band_for(score), "factors": factors}

@@ -287,6 +287,11 @@ fun shortTime(iso:String):String=try{java.time.OffsetDateTime.parse(iso).atZoneS
  var tab by remember{mutableStateOf(MainTab.Home)}
  var qrMode by remember{mutableStateOf(0)}
  var externalQr by remember{mutableStateOf<String?>(null)}
+ var mustVerify by remember{mutableStateOf(false)}
+ var verifyEmail by remember{mutableStateOf("")}
+ LaunchedEffect(Unit){ runCatching{api.emailStatus()}.getOrNull()?.let{ mustVerify=it.first; verifyEmail=it.second } }
+ // Email accounts can't pay until the email is verified (the server enforces this too).
+ if(mustVerify && (tab==MainTab.Pay || externalQr!=null)){ VerifyEmailScreen(api,verifyEmail,profile.full_name,onVerified={mustVerify=false},onBack={tab=MainTab.Home;externalQr=null});return }
  externalQr?.let{q->ExternalPayScreen(api,q,onDone={externalQr=null});return}
  var prefill by remember{mutableStateOf("")}
  var wallet by remember{mutableStateOf<Wallet?>(null)}

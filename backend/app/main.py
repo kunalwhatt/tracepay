@@ -10,7 +10,7 @@ import base64, hashlib
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, desc, func, text
+from sqlalchemy import delete as sa_delete, or_, select, desc, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi.responses import Response
@@ -30,7 +30,7 @@ from .ids import normalize_tracepay_id, parse_upi
 from . import community
 from .models import ScamReport, ExternalPayment
 
-APP_VERSION = "5.3.0"
+APP_VERSION = "5.6.0"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
@@ -301,6 +301,7 @@ def startup():
             "ALTER TABLE pilot_merchants ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(10)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_mobile ON users (mobile)",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
         ):
             conn.execute(text(statement))
     Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos")).mkdir(parents=True, exist_ok=True)
@@ -380,6 +381,12 @@ def list_reports(limit: int = Query(100, ge=1, le=500), db: Session = Depends(ge
 def create_report(body: ReportIn, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
     report = InvestigationReport(report_ref="RPT-" + uuid4().hex[:12].upper(), title=body.title.strip(), report_type=body.report_type.strip(), case_ref=body.case_ref.strip() if body.case_ref else None, body=body.body, created_by=user.id)
     db.add(report); db.flush(); db.add(AuditEvent(actor_user_id=user.id, action="report.created", object_ref=report.report_ref)); db.commit(); db.refresh(report); return report
+
+def require_payment_ready(user: User) -> None:
+    """Accounts that signed up with an email must verify it before making any payment (mobile-only accounts are exempt)."""
+    if not user.email.endswith("@mobile.tracepay.app") and not getattr(user, "email_verified", False) and user.role == "pilot_user":
+        raise HTTPException(403, "Verify your email to make payments. Open trace.pay and enter the code we emailed you.")
+
 
 def trace_shield(db: Session, user: User, recipient: str, amount: Decimal | None) -> dict:
     """TraceShield: payer-specific warnings shown before a payment, each with a plain reason. Advisory only."""
@@ -697,6 +704,210 @@ def _merchant_json(m: PilotMerchant | None) -> dict | None:
             "status": m.status, "verified": bool(getattr(m, "verified", False))}
 
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse as _JSONResponse
+
+
+@app.exception_handler(RequestValidationError)
+async def readable_validation_error(request, exc: RequestValidationError):
+    """Turn FastAPI's list of field errors into one readable sentence (apps show `detail` as-is)."""
+    parts = []
+    for err in exc.errors():
+        field = str(err.get("loc", ["", ""])[-1]).replace("_", " ")
+        msg = str(err.get("msg", "is invalid")).removeprefix("Value error, ")
+        parts.append(f"{field.capitalize()}: {msg}" if err.get("type") != "value_error" else msg)
+    return _JSONResponse(status_code=422, content={"detail": "; ".join(parts) or "Please check the details and try again."})
+
+
+# ------------------------------------------------------------------------------------------
+# Admin: accounts, link a mobile number, erase a user's data, erase logs
+# ------------------------------------------------------------------------------------------
+
+@app.get("/api/v1/admin/accounts")
+def admin_accounts(db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    profiles = {p.user_id: p for p in db.scalars(select(PilotProfile))}
+    out = []
+    for u in db.scalars(select(User).order_by(desc(User.id))):
+        p = profiles.get(u.id); vpa = p.vpa_id if p else None
+        synthetic = u.email.endswith("@mobile.tracepay.app")
+        out.append({"id": u.id, "email": None if synthetic else u.email, "mobile": getattr(u, "mobile", None), "role": u.role, "active": u.active,
+                    "email_verified": None if synthetic else bool(getattr(u, "email_verified", False)),
+                    "name": p.full_name if p else None, "vpa_id": vpa, "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
+                    "transfers": db.scalar(select(func.count(PilotTransfer.id)).where(or_(PilotTransfer.sender_vpa == vpa, PilotTransfer.receiver_vpa == vpa))) if vpa else 0,
+                    "external_payments": db.scalar(select(func.count(ExternalPayment.id)).where(ExternalPayment.user_id == u.id)) or 0,
+                    "logs": db.scalar(select(func.count(AuditEvent.id)).where(AuditEvent.actor_user_id == u.id)) or 0})
+    return out
+
+
+class LinkMobileIn(BaseModel):
+    mobile: str = Field(min_length=10, max_length=20)
+
+
+@app.patch("/api/v1/admin/accounts/{user_id}/mobile")
+def admin_link_mobile(user_id: int, body: LinkMobileIn, db: Session = Depends(get_db), admin: User = Depends(require_roles("admin"))):
+    """Associate a mobile number with an account so the person can sign in with it."""
+    target = db.get(User, user_id)
+    if not target: raise HTTPException(404, "Account not found")
+    try: mobile = normalize_mobile(body.mobile)
+    except ValueError as e: raise HTTPException(422, str(e))
+    other = db.scalar(select(User).where(User.mobile == mobile, User.id != user_id))
+    if other: raise HTTPException(409, "This mobile number is already linked to another account")
+    target.mobile = mobile
+    db.add(AuditEvent(actor_user_id=admin.id, action="admin.link_mobile", object_ref=str(user_id), detail=json.dumps({"mobile_last4": mobile[-4:]})))
+    db.commit()
+    return {"id": target.id, "mobile": mobile}
+
+
+class VerifyFlagIn(BaseModel):
+    verified: bool
+
+
+@app.patch("/api/v1/admin/accounts/{user_id}/email-verified")
+def admin_set_email_verified(user_id: int, body: VerifyFlagIn, db: Session = Depends(get_db), admin: User = Depends(require_roles("admin"))):
+    """Manually mark an email verified or unverified (for support cases). Audited."""
+    target = db.get(User, user_id)
+    if not target: raise HTTPException(404, "Account not found")
+    if target.email.endswith("@mobile.tracepay.app"): raise HTTPException(409, "This account has no email")
+    target.email_verified = body.verified
+    db.add(AuditEvent(actor_user_id=admin.id, action="admin.email_verified" if body.verified else "admin.email_unverified", object_ref=str(user_id)))
+    db.commit()
+    return {"id": user_id, "email_verified": body.verified}
+
+
+class EraseIn(BaseModel):
+    scopes: list[str] = Field(min_length=1)
+    confirm: str
+
+
+ERASE_SCOPES = {"transactions", "logs", "reports", "profile", "account"}
+
+
+@app.post("/api/v1/admin/accounts/{user_id}/erase")
+async def admin_erase_account(user_id: int, body: EraseIn, db: Session = Depends(get_db), admin: User = Depends(require_roles("admin"))):
+    """Permanently delete a member's data. `profile` includes transactions; `account` includes everything."""
+    if body.confirm != "ERASE": raise HTTPException(422, "Type ERASE to confirm")
+    scopes = set(body.scopes)
+    if not scopes <= ERASE_SCOPES: raise HTTPException(422, f"Unknown scope. Use: {', '.join(sorted(ERASE_SCOPES))}")
+    target = db.get(User, user_id)
+    if not target: raise HTTPException(404, "Account not found")
+    if target.id == admin.id: raise HTTPException(409, "You can't erase your own account")
+    if "account" in scopes and target.role != "pilot_user": raise HTTPException(409, "Only member accounts can be deleted here")
+    if "account" in scopes: scopes |= ERASE_SCOPES
+    if "profile" in scopes: scopes.add("transactions")
+    profile = db.scalar(select(PilotProfile).where(PilotProfile.user_id == user_id))
+    vpa = profile.vpa_id if profile else None
+    counts = {}
+    if "transactions" in scopes:
+        refs = [r for (r,) in db.execute(select(PilotTransfer.transfer_ref).where(or_(PilotTransfer.sender_vpa == vpa, PilotTransfer.receiver_vpa == vpa, PilotTransfer.sender_user_id == user_id)))] if vpa else \
+               [r for (r,) in db.execute(select(PilotTransfer.transfer_ref).where(PilotTransfer.sender_user_id == user_id))]
+        counts["ledger_entries"] = db.execute(sa_delete(PilotLedgerEntry).where(or_(PilotLedgerEntry.transfer_ref.in_(refs), PilotLedgerEntry.wallet_vpa == (vpa or "")))).rowcount if refs or vpa else 0
+        counts["transfers"] = db.execute(sa_delete(PilotTransfer).where(PilotTransfer.transfer_ref.in_(refs))).rowcount if refs else 0
+        counts["external_payments"] = db.execute(sa_delete(ExternalPayment).where(ExternalPayment.user_id == user_id)).rowcount
+        counts["payment_intents"] = db.execute(sa_delete(PaymentIntent).where(PaymentIntent.user_id == user_id)).rowcount
+        if vpa:
+            counts["evidence_records"] = db.execute(sa_delete(Transaction).where(or_(Transaction.sender_id == vpa, Transaction.receiver_id == vpa))).rowcount
+            w = db.scalar(select(PilotWallet).where(PilotWallet.owner_vpa == vpa))
+            if w and "profile" not in scopes: w.balance = Decimal("0.00")
+    if "reports" in scopes:
+        counts["reports"] = db.execute(sa_delete(ScamReport).where(ScamReport.reporter_user_id == user_id)).rowcount
+    if "profile" in scopes and profile:
+        if profile.photo_storage_key:
+            try: (Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos")) / profile.photo_storage_key).unlink(missing_ok=True)
+            except OSError: pass
+        db.execute(sa_delete(PilotWallet).where(PilotWallet.owner_vpa == vpa))
+        db.delete(profile); counts["profile"] = 1
+    if "logs" in scopes:
+        counts["logs"] = db.execute(sa_delete(AuditEvent).where(AuditEvent.actor_user_id == user_id)).rowcount
+    if "account" in scopes:
+        db.delete(target); counts["account"] = 1
+    db.add(AuditEvent(actor_user_id=admin.id, action="admin.erase", object_ref=str(user_id), detail=json.dumps({"scopes": sorted(scopes), "counts": counts})))
+    db.commit()
+    await hub.publish({"type": "activity", "action": "admin.erase"})
+    return {"erased": sorted(scopes), "counts": counts}
+
+
+class EraseLogsIn(BaseModel):
+    confirm: str
+    older_than_days: int = Field(default=0, ge=0, le=3650)
+
+
+@app.post("/api/v1/admin/logs/erase")
+def admin_erase_logs(body: EraseLogsIn, db: Session = Depends(get_db), admin: User = Depends(require_roles("admin"))):
+    if body.confirm != "ERASE": raise HTTPException(422, "Type ERASE to confirm")
+    stmt = sa_delete(AuditEvent)
+    if body.older_than_days:
+        stmt = stmt.where(AuditEvent.created_at < datetime.now(timezone.utc) - timedelta(days=body.older_than_days))
+    n = db.execute(stmt).rowcount
+    db.add(AuditEvent(actor_user_id=admin.id, action="admin.erase_logs", object_ref="audit_events", detail=json.dumps({"deleted": n, "older_than_days": body.older_than_days})))
+    db.commit()
+    return {"deleted": n}
+
+
+# ------------------------------------------------------------------------------------------
+# Email verification with a one-time code, sent and checked by Supabase Auth
+# Env: SUPABASE_URL (https://<ref>.supabase.co) and SUPABASE_ANON_KEY. Keys stay on the server.
+# ------------------------------------------------------------------------------------------
+import urllib.request, urllib.error
+
+
+def _supabase(path: str, body: dict) -> tuple[int, dict]:
+    base, key = os.getenv("SUPABASE_URL", "").rstrip("/"), os.getenv("SUPABASE_ANON_KEY", "")
+    if not base or not key:
+        raise HTTPException(503, "Email verification is not configured yet")
+    req = urllib.request.Request(f"{base}/auth/v1/{path}", data=json.dumps(body).encode(), method="POST",
+                                 headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try: payload = json.loads(e.read() or b"{}")
+        except ValueError: payload = {}
+        return e.code, payload
+
+
+def _real_email(u: User) -> str | None:
+    return None if u.email.endswith("@mobile.tracepay.app") else u.email
+
+
+class EmailOtpSendIn(BaseModel):
+    full_name: str | None = Field(default=None, max_length=160)
+
+
+@app.get("/api/v1/auth/email/status")
+def email_status(user: User = Depends(current_user)):
+    return {"email": _real_email(user), "verified": bool(getattr(user, "email_verified", False)), "required": _real_email(user) is not None}
+
+
+@app.post("/api/v1/auth/email/send-otp")
+def email_send_otp(body: EmailOtpSendIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Ask Supabase to email a one-time code. The name is stored as user metadata so the email can greet the person."""
+    email = _real_email(user)
+    if not email: raise HTTPException(409, "This account signed up with a mobile number and has no email to verify")
+    if getattr(user, "email_verified", False): return {"sent": False, "verified": True}
+    profile = db.scalar(select(PilotProfile).where(PilotProfile.user_id == user.id))
+    name = (body.full_name or (profile.full_name if profile else "") or "").strip().split(" ")[0] or None
+    status, payload = _supabase("otp", {"email": email, "create_user": True, "data": {"full_name": name} if name else {}})
+    if status == 429: raise HTTPException(429, "Too many codes requested. Wait a minute and try again.")
+    if status >= 400: raise HTTPException(502, payload.get("msg") or payload.get("error_description") or "Couldn't send the code. Try again.")
+    db.add(AuditEvent(actor_user_id=user.id, action="auth.email_otp_sent", object_ref=str(user.id))); db.commit()
+    return {"sent": True, "email": email}
+
+
+class EmailOtpVerifyIn(BaseModel):
+    code: str = Field(min_length=6, max_length=10, pattern=r"^\d+$")
+
+
+@app.post("/api/v1/auth/email/verify-otp")
+def email_verify_otp(body: EmailOtpVerifyIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    email = _real_email(user)
+    if not email: raise HTTPException(409, "This account has no email to verify")
+    status, payload = _supabase("verify", {"type": "email", "email": email, "token": body.code})
+    if status >= 400: raise HTTPException(400, "That code is wrong or has expired. Request a new one.")
+    user.email_verified = True
+    db.add(AuditEvent(actor_user_id=user.id, action="auth.email_verified", object_ref=str(user.id))); db.commit()
+    return {"verified": True, "email": email}
+
+
 @app.get("/api/v1/lookup")
 def lookup_account(ref: str = Query(..., min_length=3, max_length=600), amount: Decimal | None = Query(None, gt=0),
                    db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -831,6 +1042,7 @@ class ExternalPaymentIn(BaseModel):
 @app.post("/api/v1/external-payments", status_code=201)
 async def record_external_payment(body: ExternalPaymentIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
     """Record a payment the member completed in another UPI app. Successful ones become evidence records."""
+    if body.status == "SUCCESS": require_payment_ready(user)
     qr = parse_upi(body.payee)
     if not qr["vpa"]:
         raise HTTPException(400, "That is not a UPI ID or UPI QR code.")
@@ -1036,6 +1248,7 @@ def list_conflicts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(
 
 @app.post("/api/v1/payment-intents", response_model=PaymentIntentOut, status_code=201)
 def create_payment_intent(body: PaymentIntentIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_payment_ready(user)
     assessment = db.get(RiskAssessment, body.assessment_id)
     if not assessment or assessment.recipient_ref != body.recipient_ref:
         raise HTTPException(400, "A matching recipient risk assessment is required before creating a payment intent")
@@ -1520,6 +1733,7 @@ def allow_pilot_transfer(user_id: int, limit: int = 20, window: int = 60) -> boo
 
 @app.post("/api/v1/pilot/transfers", status_code=201)
 async def create_pilot_transfer(body: PilotTransferIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_payment_ready(user)
     profile = db.scalar(select(PilotProfile).where(PilotProfile.user_id == user.id))
     if not profile: raise HTTPException(409, "Complete TraceBank pilot profile setup before transferring")
     if profile.vpa_id == body.receiver_vpa: raise HTTPException(400, "Choose a different recipient")

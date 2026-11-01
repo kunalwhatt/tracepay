@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import LocalAuthentication
 import Combine
 import Security
 
@@ -41,7 +42,30 @@ enum LocalUnlockStore {
 }
 
 
-struct APIError: Decodable { let detail: String? }
+struct APIError: Decodable {
+    let detail: String?
+    private struct FieldError: Decodable { let msg: String?; let loc: [AnyCodableKey]? }
+    private enum Keys: String, CodingKey { case detail }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        if let text = try? c.decode(String.self, forKey: .detail) { detail = text; return }
+        if let list = try? c.decode([FieldError].self, forKey: .detail) {
+            detail = list.map { e in
+                let field = e.loc?.last?.text.replacingOccurrences(of: "_", with: " ").capitalized ?? ""
+                return field.isEmpty ? (e.msg ?? "Invalid value") : "\(field): \(e.msg ?? "invalid")"
+            }.joined(separator: "; ")
+            return
+        }
+        detail = nil
+    }
+}
+struct AnyCodableKey: Decodable {
+    let text: String
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let s = try? c.decode(String.self) { text = s } else if let i = try? c.decode(Int.self) { text = String(i) } else { text = "" }
+    }
+}
 struct AuthResponse: Decodable { let access_token: String; let token_type: String; let role: String }
 struct ShieldReason: Decodable, Hashable { let code: String; let severity: Int; let text: String }
 struct ShieldInfo: Decodable, Hashable { let level: String; let reasons: [ShieldReason] }
@@ -375,7 +399,7 @@ final class TracePaySession: ObservableObject {
     func lock() { token = nil; email = nil; profileLoaded = false; pilotProfile = nil; pilotWallet = nil; transfers = [] }
 
     /// Explicit local session reset helper; not exposed as the normal logout action.
-    func clearSavedCredentials() { token = nil; email = nil; profileLoaded = false; pilotProfile = nil; pilotWallet = nil; transfers = []; LocalUnlockStore.clearSavedSession() }
+    func clearSavedCredentials() { CredentialVault.clear(); token = nil; email = nil; profileLoaded = false; pilotProfile = nil; pilotWallet = nil; transfers = []; LocalUnlockStore.clearSavedSession() }
 
     private func send<T: Decodable, B: Encodable>(_ path: String, method: String, body: B?, authenticated: Bool) async throws -> T {
         var request = URLRequest(url: baseURL.appending(path: path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))))
@@ -443,18 +467,52 @@ enum JWTClaims {
 
 // MARK: - Safety layer (lookup any UPI ID, report scams, record payments made in other UPI apps)
 
-struct SafetyFactor: Decodable, Hashable { let code: String; let label: String; let family: String; let points: Int; let detail: String }
+struct SafetyFactor: Decodable, Hashable {
+    let code: String; let label: String; let family: String; let points: Int; let detail: String
+    init(code: String, label: String, family: String, points: Int, detail: String) { self.code = code; self.label = label; self.family = family; self.points = points; self.detail = detail }
+    private enum K: String, CodingKey { case code, label, family, points, detail }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        code = (try? c.decode(String.self, forKey: .code)) ?? "SIGNAL"
+        label = (try? c.decode(String.self, forKey: .label)) ?? "Signal"
+        family = (try? c.decode(String.self, forKey: .family)) ?? "deep"
+        points = (try? c.decode(Int.self, forKey: .points)) ?? Int((try? c.decode(Double.self, forKey: .points)) ?? 0)
+        detail = (try? c.decode(String.self, forKey: .detail)) ?? ""
+    }
+}
 struct SafetyVerdict: Decodable, Hashable { let title: String; let advice: String }
 struct SafetyMerchant: Decodable, Hashable { let display_name: String?; let verified: Bool? }
-struct SafetyCommunity: Decodable, Hashable { let reports: Int; let verified_reports: Int; let complaints: Int }
-struct SafetyHistory: Decodable, Hashable { let records: Int }
-struct SafetyQR: Decodable, Hashable { let name: String?; let amount: String?; let note: String? }
 struct SafetyLookup: Decodable, Identifiable, Hashable {
     var id: String { ref }
     let ref: String; let display_name: String?; let member: Bool; let merchant: SafetyMerchant?
     let score: Int?; let band: String; let verdict: SafetyVerdict; let factors: [SafetyFactor]
-    let confidence: Double; let counterfactuals: [String]; let community: SafetyCommunity; let history: SafetyHistory
-    let qr: SafetyQR?; let shield: ShieldInfo?
+    let confidence: Double; let counterfactuals: [String]; let reports: Int; let records: Int
+    let qrName: String?; let qrAmount: String?; let shield: ShieldInfo?
+    private enum K: String, CodingKey { case ref, display_name, member, merchant, score, band, verdict, factors, confidence, counterfactuals, community, history, qr, shield }
+    private enum CK: String, CodingKey { case reports }
+    private enum HK: String, CodingKey { case records }
+    private enum QK: String, CodingKey { case name, amount }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        ref = (try? c.decode(String.self, forKey: .ref)) ?? ""
+        display_name = try? c.decode(String.self, forKey: .display_name)
+        member = (try? c.decode(Bool.self, forKey: .member)) ?? false
+        merchant = try? c.decode(SafetyMerchant.self, forKey: .merchant)
+        score = (try? c.decode(Int.self, forKey: .score)) ?? (try? c.decode(Double.self, forKey: .score)).map { Int($0.rounded()) }
+        band = (try? c.decode(String.self, forKey: .band)) ?? "insufficient_information"
+        verdict = (try? c.decode(SafetyVerdict.self, forKey: .verdict)) ?? SafetyVerdict(title: "Not enough history", advice: "Pay only people you know.")
+        factors = (try? c.decode([SafetyFactor].self, forKey: .factors)) ?? []
+        confidence = (try? c.decode(Double.self, forKey: .confidence)) ?? 0
+        counterfactuals = (try? c.decode([String].self, forKey: .counterfactuals)) ?? []
+        reports = (try? c.nestedContainer(keyedBy: CK.self, forKey: .community).decode(Int.self, forKey: .reports)) ?? 0
+        records = (try? c.nestedContainer(keyedBy: HK.self, forKey: .history).decode(Int.self, forKey: .records)) ?? 0
+        let q = try? c.nestedContainer(keyedBy: QK.self, forKey: .qr)
+        qrName = try? q?.decode(String.self, forKey: .name)
+        qrAmount = try? q?.decode(String.self, forKey: .amount)
+        shield = try? c.decode(ShieldInfo.self, forKey: .shield)
+    }
+    static func == (a: SafetyLookup, b: SafetyLookup) -> Bool { a.ref == b.ref && a.score == b.score }
+    func hash(into h: inout Hasher) { h.combine(ref); h.combine(score) }
 }
 struct ExternalPaymentBody: Encodable {
     let payee: String; let payee_name: String?; let amount: String; let app: String; let status: String; let source: String
@@ -518,5 +576,89 @@ extension TracePaySession {
     func externalPayments() async throws -> [ExternalPaymentItem] {
         let none: [String: String]? = nil
         return try await send("/api/v1/external-payments", method: "GET", body: none, authenticated: true)
+    }
+}
+
+// MARK: - Sign in / sign up with a mobile number or email (no OTP), 5.3+
+extension TracePaySession {
+    /// `identifier` is an email address or a 10-digit mobile number.
+    func signIn(identifier: String, password: String) async throws {
+        let clean = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let result: AuthResponse = try await send("/api/v1/auth/login", method: "POST",
+                                                  body: ["identifier": clean, "email": clean, "password": password], authenticated: false)
+        token = result.access_token
+        sessionExpired = false
+        profileLoaded = false
+        pilotProfile = nil
+        pilotWallet = nil
+        email = clean
+        LocalUnlockStore.saveSession(token: result.access_token, email: clean)
+        CredentialVault.save(identifier: clean, password: password)
+    }
+
+    func signUp(email: String?, mobile: String?, password: String) async throws {
+        var body = ["password": password]
+        if let email, !email.isEmpty { body["email"] = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        if let mobile, !mobile.isEmpty { body["mobile"] = mobile }
+        let _: AnyDecodableIgnored = try await send("/api/v1/auth/register", method: "POST", body: body, authenticated: false)
+        try await signIn(identifier: body["email"] ?? (mobile ?? ""), password: password)
+    }
+}
+
+
+// MARK: - Credential vault: the sign-in is stored in the Keychain, readable only after Face ID / Touch ID / passcode.
+enum CredentialVault {
+    private static let service = "tech.tracepay.ios.vault"
+    private static let account = "member"
+    static var hasCredential: Bool {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+                                kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip]
+        let status = SecItemCopyMatching(q as CFDictionary, nil)
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
+    }
+    static func save(identifier: String, password: String) {
+        guard let data = try? JSONEncoder().encode([identifier, password]) else { return }
+        clear()
+        var error: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .userPresence, &error) else { return }
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+                                kSecValueData as String: data, kSecAttrAccessControl as String: access]
+        SecItemAdd(q as CFDictionary, nil)
+    }
+    /// Shows the system Face ID / Touch ID / passcode prompt. Returns nil if cancelled or nothing is stored.
+    static func read(reason: String) async -> (identifier: String, password: String)? {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ctx = LAContext(); ctx.localizedReason = reason
+                let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+                                        kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne, kSecUseAuthenticationContext as String: ctx]
+                var item: CFTypeRef?
+                guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess, let data = item as? Data,
+                      let pair = try? JSONDecoder().decode([String].self, from: data), pair.count == 2 else { cont.resume(returning: nil); return }
+                cont.resume(returning: (pair[0], pair[1]))
+            }
+        }
+    }
+    static func clear() {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+        SecItemDelete(q as CFDictionary)
+    }
+}
+
+// MARK: - Email verification code (sent by Supabase via the trace.pay server)
+extension TracePaySession {
+    func sendEmailCode(name: String) async throws {
+        let _: AnyDecodableIgnored = try await send("/api/v1/auth/email/send-otp", method: "POST", body: ["full_name": name], authenticated: true)
+    }
+    func verifyEmailCode(_ code: String) async throws {
+        let _: AnyDecodableIgnored = try await send("/api/v1/auth/email/verify-otp", method: "POST", body: ["code": code], authenticated: true)
+    }
+}
+
+struct EmailStatus: Decodable { let email: String?; let verified: Bool; let required: Bool }
+extension TracePaySession {
+    func emailStatus() async throws -> EmailStatus {
+        let none: [String: String]? = nil
+        return try await send("/api/v1/auth/email/status", method: "GET", body: none, authenticated: true)
     }
 }

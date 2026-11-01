@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">
+<title>Your trace.pay code</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Lexend:wght@400;600&display=swap');
+@media (max-width:480px){ .tp-h1{font-size:32px!important;line-height:1.05!important} .tp-pad{padding-left:20px!important;padding-right:20px!important} }
+</style>
+</head>
+<body style="margin:0;padding:0;background:#E4DCFF;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your trace.pay code is {{ .Token }}. Never share it with anyone.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#E4DCFF;">
+<tr><td align="center" style="padding:28px 14px 40px 14px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;">
+
+<!-- marquee strip -->
+<tr><td style="background:#C6FF3D;border:3px solid #14092E;box-shadow:6px 6px 0 #14092E;padding:9px 12px;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:12px;letter-spacing:1px;color:#14092E;text-align:center;white-space:nowrap;overflow:hidden;">&#10022; VERIFY YOUR EMAIL &#10022; ONE CODE AWAY &#10022; PAY ANYONE. KNOW THEM FIRST. &#10022;</td></tr>
+<tr><td style="height:20px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+<!-- logo -->
+<tr><td style="padding:0 0 16px 2px;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+  <td style="vertical-align:middle;"><img src="{{ .SiteURL }}/tracepay-app-icon.png" width="42" height="42" alt="trace.pay" style="display:block;border:0;border-radius:11px;"></td>
+  <td style="vertical-align:middle;padding-left:10px;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:23px;font-weight:600;color:#14092E;letter-spacing:-0.5px;">trace<span style="color:#5B2EFF;">.</span>pay</td>
+</tr></table></td></tr>
+
+<!-- card -->
+<tr><td style="background:#FFFFFF;border:3px solid #14092E;box-shadow:10px 10px 0 #14092E;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <!-- hero -->
+  <tr><td class="tp-pad" style="background:#5B2EFF;background-image:linear-gradient(150deg,#5B2EFF 0%,#3A17C9 70%,#24108A 100%);border-bottom:3px solid #14092E;padding:28px 28px 32px 28px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+      <td style="background:#C6FF3D;border:3px solid #14092E;box-shadow:3px 3px 0 #14092E;padding:6px 11px;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#14092E;">&#10022; one last step</td>
+      <td style="width:8px;">&nbsp;</td>
+      <td style="background:#FFFFFF;border:3px solid #14092E;box-shadow:3px 3px 0 #14092E;padding:6px 11px;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#14092E;">no cap, it's you?</td>
+    </tr></table>
+    <h1 class="tp-h1" style="margin:24px 0 0 0;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:40px;line-height:1.02;color:#FFFFFF;letter-spacing:-0.5px;text-shadow:3px 3px 0 #C6FF3D,6px 6px 0 #14092E;">hey {{ if .Data.full_name }}{{ .Data.full_name }}{{ else }}there{{ end }},<br>you're one<br>code away.</h1>
+    <p style="margin:18px 0 0 0;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#EDE7FF;">Drop this code into the trace.pay app to finish setting up your account. Takes 2 seconds, promise.</p>
+  </td></tr>
+  <!-- code -->
+  <tr><td class="tp-pad" style="padding:28px 28px 6px 28px;">
+    <p style="margin:0 0 14px 0;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:12px;letter-spacing:2px;color:#14092E;">YOUR CODE &#8595;</p>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:0 5px 0 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="width:46px;height:58px;background:#C6FF3D;border:3px solid #14092E;box-shadow:4px 4px 0 #14092E;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:30px;line-height:58px;color:#14092E;">{{ slice .Token 0 1 }}</td></tr></table></td><td style="padding:0 5px 0 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="width:46px;height:58px;background:#FFFFFF;border:3px solid #14092E;box-shadow:4px 4px 0 #14092E;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:30px;line-height:58px;color:#14092E;">{{ slice .Token 1 2 }}</td></tr></table></td><td style="padding:0 5px 0 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="width:46px;height:58px;background:#E4DCFF;border:3px solid #14092E;box-shadow:4px 4px 0 #14092E;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:30px;line-height:58px;color:#14092E;">{{ slice .Token 2 3 }}</td></tr></table></td><td style="padding:0 5px 0 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="width:46px;height:58px;background:#C6FF3D;border:3px solid #14092E;box-shadow:4px 4px 0 #14092E;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:30px;line-height:58px;color:#14092E;">{{ slice .Token 3 4 }}</td></tr></table></td><td style="padding:0 5px 0 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="width:46px;height:58px;background:#FFFFFF;border:3px solid #14092E;box-shadow:4px 4px 0 #14092E;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:30px;line-height:58px;color:#14092E;">{{ slice .Token 4 5 }}</td></tr></table></td><td style="padding:0 5px 0 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="width:46px;height:58px;background:#E4DCFF;border:3px solid #14092E;box-shadow:4px 4px 0 #14092E;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:30px;line-height:58px;color:#14092E;">{{ slice .Token 5 6 }}</td></tr></table></td></tr></table>
+    <p style="margin:16px 0 0 0;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;color:#5E5480;">Copy-friendly: <strong style="font-family:Menlo,Consolas,monospace;font-size:15px;color:#14092E;letter-spacing:2px;">{{ .Token }}</strong></p>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;"><tr>
+      <td style="border:2px solid #14092E;padding:6px 10px;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#14092E;background:#FFFFFF;">&#9201; expires soon</td><td style="width:6px;">&nbsp;</td>
+      <td style="border:2px solid #14092E;padding:6px 10px;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;color:#14092E;background:#C6FF3D;">&#9757; single use</td>
+    </tr></table>
+    <p style="margin:12px 0 0 0;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:12.5px;color:#5E5480;">Sent to <strong style="color:#14092E;font-weight:600;">{{ .Email }}</strong></p>
+  </td></tr>
+  <!-- warning -->
+  <tr><td class="tp-pad" style="padding:26px 28px 28px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+      <td style="background:#FDEAE7;border:3px solid #14092E;box-shadow:6px 6px 0 #E03E2D;padding:15px 17px;">
+        <p style="margin:0;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:14px;letter-spacing:0.3px;color:#14092E;">&#9995; SCAMMERS WANT THIS CODE.</p>
+        <p style="margin:6px 0 0 0;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:13.5px;line-height:1.55;color:#14092E;">Don't send it to anyone. Not "bank staff", not "customer care", not your bestie. trace.pay will never ask for it, or for your UPI PIN.</p>
+      </td>
+    </tr></table>
+    <p style="margin:20px 0 0 0;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.55;color:#5E5480;">Wasn't you? Just ignore this email. Nothing happens without the code.</p>
+  </td></tr>
+</table>
+</td></tr>
+
+<!-- footer -->
+<tr><td align="center" style="padding:30px 10px 0 10px;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 14px auto;"><tr>
+    <td style="width:12px;height:12px;background:#8F6BFF;border:2px solid #14092E;font-size:0;line-height:0;">&nbsp;</td><td style="width:8px;font-size:0;">&nbsp;</td>
+    <td style="width:12px;height:12px;background:#C6FF3D;border:2px solid #14092E;font-size:0;line-height:0;">&nbsp;</td><td style="width:8px;font-size:0;">&nbsp;</td>
+    <td style="width:12px;height:12px;background:#5B2EFF;border:2px solid #14092E;font-size:0;line-height:0;">&nbsp;</td>
+  </tr></table>
+  <p style="margin:0;font-family:'Archivo Black','Arial Black',Helvetica,Arial,sans-serif;font-size:13px;letter-spacing:0.3px;color:#14092E;">PAY ANYONE. KNOW THEM FIRST.</p>
+  <p style="margin:6px 0 0 0;font-family:'Lexend','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;color:#5E5480;">made with &#128156; in hyderabad &middot; trace.pay &middot; KL University</p>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
