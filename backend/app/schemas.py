@@ -1,10 +1,35 @@
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator, model_validator
+
+def normalize_mobile(value: str | None) -> str | None:
+    """Indian mobile numbers: keep the last 10 digits (accepts +91, spaces, dashes)."""
+    if not value:
+        return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if digits.startswith("91") and len(digits) == 12:
+        digits = digits[2:]
+    if len(digits) != 10 or digits[0] not in "6789":
+        raise ValueError("Enter a valid 10-digit Indian mobile number")
+    return digits
+
 
 class RegisterIn(BaseModel):
-    email: EmailStr
+    """Sign up with an email or a mobile number (one is required). No OTP."""
+    email: EmailStr | None = None
+    mobile: str | None = Field(default=None, max_length=20)
     password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("mobile")
+    @classmethod
+    def _mobile(cls, v):
+        return normalize_mobile(v)
+
+    @model_validator(mode="after")
+    def _one_identifier(self):
+        if not self.email and not self.mobile:
+            raise ValueError("Enter an email or a mobile number")
+        return self
 
     @field_validator("password")
     @classmethod
@@ -16,7 +41,9 @@ class RegisterIn(BaseModel):
         return value
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    """Sign in with an email or a mobile number. `email` is kept for older app versions."""
+    identifier: str | None = Field(default=None, max_length=320)
+    email: str | None = Field(default=None, max_length=320)
     password: str
 
 class TokenOut(BaseModel):

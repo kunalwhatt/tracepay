@@ -508,3 +508,15 @@ enum UPIQR {
         return fields
     }
 }
+
+struct ExternalPaymentItem: Decodable, Identifiable, Hashable {
+    let id: Int; let payee_vpa: String; let payee_name: String?; let amount: String; let app: String
+    let status: String; let source: String; let risk_score: Int?; let risk_band: String?; let created_at: String
+}
+
+extension TracePaySession {
+    func externalPayments() async throws -> [ExternalPaymentItem] {
+        let none: [String: String]? = nil
+        return try await send("/api/v1/external-payments", method: "GET", body: none, authenticated: true)
+    }
+}

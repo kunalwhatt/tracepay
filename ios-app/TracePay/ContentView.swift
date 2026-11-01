@@ -4,6 +4,8 @@ import CoreImage.CIFilterBuiltins
 import LocalAuthentication
 import PhotosUI
 import UIKit
+import Charts
+import AVFoundation
 
 // MARK: - Trace.Pay brand system
 
@@ -47,7 +49,7 @@ struct RootView: View {
             } else if session.pilotProfile == nil {
                 ProfileSetupScreen()
             } else {
-                MainAppScreen()
+                AppShell()
             }
             if session.sessionExpired && session.token == nil {
                 VStack { SessionExpiredBanner().padding(.horizontal, 16).padding(.top, 8); Spacer() }
@@ -1766,5 +1768,1222 @@ struct ExternalPayView: View {
                 recorded = status
             } catch { message = error.localizedDescription }
         }
+    }
+}
+
+// =====================================================================================
+// MARK: - Trace.Pay 7 · design system
+// =====================================================================================
+
+enum DS {
+    static let bg = Color(hex: 0xF6F5FB)
+    static let card = Color.white
+    static let ink = Color(hex: 0x0F0B1E)
+    static let sub = Color(hex: 0x6B6880)
+    static let hair = Color(hex: 0xE9E6F2)
+    static let accent = Color(hex: 0x5B2EFF)
+    static let accentSoft = Color(hex: 0xEEE9FF)
+    static let lime = Color(hex: 0xC6FF3D)
+    static let safe = Color(hex: 0x16A34A)
+    static let watch = Color(hex: 0xF59E0B)
+    static let review = Color(hex: 0xF97316)
+    static let high = Color(hex: 0xDC2626)
+
+    static func risk(_ band: String) -> Color {
+        switch band { case "high_review": return high; case "review": return review; case "watch": return watch; case "low": return safe; default: return sub }
+    }
+    static func riskLabel(_ band: String) -> String {
+        switch band { case "high_review": return "High risk"; case "review": return "Risky"; case "watch": return "Be careful"; case "low": return "Safe"; default: return "New account" }
+    }
+    // Typography: serif display for headings, rounded for numbers, default for text.
+    static func display(_ size: CGFloat) -> Font { .system(size: size, weight: .bold, design: .serif) }
+    static func number(_ size: CGFloat, _ weight: Font.Weight = .bold) -> Font { .system(size: size, weight: weight, design: .rounded) }
+    static func text(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
+}
+
+enum Lang: String, CaseIterable { case en, te, hi
+    var label: String { switch self { case .en: return "English"; case .te: return "తెలుగు"; case .hi: return "हिन्दी" } }
+}
+func L(_ key: String) -> String {
+    let lang = Lang(rawValue: UserDefaults.standard.string(forKey: "tp.lang") ?? "en") ?? .en
+    let table: [String: [Lang: String]] = [
+        "home": [.en: "Home", .te: "హోమ్", .hi: "होम"], "activity": [.en: "Activity", .te: "లావాదేవీలు", .hi: "गतिविधि"],
+        "scan": [.en: "Scan", .te: "స్కాన్", .hi: "स्कैन"], "check": [.en: "Check", .te: "తనిఖీ", .hi: "जाँच"],
+        "profile": [.en: "Profile", .te: "ప్రొఫైల్", .hi: "प्रोफ़ाइल"], "pay": [.en: "Pay", .te: "చెల్లించు", .hi: "भुगतान"],
+        "check_id": [.en: "Check UPI ID", .te: "UPI ID తనిఖీ", .hi: "UPI ID जाँचें"], "scammed": [.en: "Get help", .te: "సహాయం", .hi: "मदद"],
+        "recent": [.en: "Recent activity", .te: "ఇటీవలి లావాదేవీలు", .hi: "हाल की गतिविधि"], "see_all": [.en: "See all", .te: "అన్నీ", .hi: "सभी"],
+        "trusted": [.en: "People you pay", .te: "మీరు చెల్లించే వారు", .hi: "जिन्हें आप भुगतान करते हैं"],
+        "stay_safe": [.en: "Know the scams", .te: "మోసాలను తెలుసుకోండి", .hi: "धोखाधड़ी पहचानें"],
+        "continue": [.en: "Continue", .te: "కొనసాగించు", .hi: "जारी रखें"], "cancel": [.en: "Cancel", .te: "రద్దు", .hi: "रद्द करें"],
+        "report": [.en: "Report", .te: "ఫిర్యాదు", .hi: "रिपोर्ट"], "settings": [.en: "Settings", .te: "సెట్టింగ్‌లు", .hi: "सेटिंग्स"],
+        "risk_report": [.en: "Risk report", .te: "రిస్క్ నివేదిక", .hi: "जोखिम रिपोर्ट"],
+    ]
+    return table[key]?[lang] ?? table[key]?[.en] ?? key
+}
+
+func parseDate(_ s: String) -> Date {
+    let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let d = f.date(from: s) { return d }
+    f.formatOptions = [.withInternetDateTime]; return f.date(from: s) ?? Date.distantPast
+}
+func rupees(_ value: String) -> String {
+    guard let d = Double(value) else { return "₹" + value }
+    let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = Locale(identifier: "en_IN"); f.maximumFractionDigits = 2
+    return "₹" + (f.string(from: NSNumber(value: d)) ?? value)
+}
+func rupees(_ value: Double) -> String { rupees(String(value)) }
+
+struct Card<Content: View>: View {
+    var padding: CGFloat = 18
+    @ViewBuilder var content: Content
+    var body: some View {
+        content.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
+            .background(DS.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(DS.hair, lineWidth: 1))
+    }
+}
+
+struct PrimaryButton: View {
+    let title: String; var icon: String? = nil; var tint: Color = DS.accent; var busy = false; let action: () -> Void
+    var body: some View {
+        Button(action: { Haptic.tap(); action() }) {
+            HStack(spacing: 8) {
+                if busy { ProgressView().tint(.white) } else if let icon { Image(systemName: icon) }
+                Text(title)
+            }
+            .font(DS.text(16, .semibold)).foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 54)
+            .background(tint, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }.buttonStyle(PressScaleStyle()).disabled(busy)
+    }
+}
+
+struct SecondaryButton: View {
+    let title: String; var icon: String? = nil; var tint: Color = DS.ink; let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) { if let icon { Image(systemName: icon) }; Text(title) }
+                .font(DS.text(15, .semibold)).foregroundStyle(tint).frame(maxWidth: .infinity).frame(height: 50)
+                .background(DS.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(DS.hair))
+        }.buttonStyle(PressScaleStyle())
+    }
+}
+
+struct ScreenHeader: View {
+    let title: String; var subtitle: String? = nil
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(DS.display(32)).foregroundStyle(DS.ink)
+            if let subtitle { Text(subtitle).font(DS.text(14)).foregroundStyle(DS.sub) }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+    }
+}
+
+// =====================================================================================
+// MARK: - Credit-score style risk report
+// =====================================================================================
+
+struct RiskModel: Identifiable {
+    let id = UUID()
+    let name: String; let ref: String; let verified: Bool; let member: Bool
+    let score: Int?; let band: String; let title: String; let advice: String
+    let factors: [SafetyFactor]; let counterfactuals: [String]
+    let reports: Int; let records: Int; let confidence: Double; let shield: ShieldInfo?
+
+    init(_ l: SafetyLookup) {
+        name = l.display_name ?? l.ref; ref = l.ref; verified = l.merchant?.verified == true; member = l.member
+        score = l.score; band = l.band; title = l.verdict.title; advice = l.verdict.advice
+        factors = l.factors; counterfactuals = l.counterfactuals
+        reports = l.community.reports; records = l.history.records; confidence = l.confidence; shield = l.shield
+    }
+    init(fallback r: RiskResponse, name: String) {
+        self.name = name; ref = r.recipient_ref; verified = false; member = true; score = nil
+        band = ["review": "review", "caution": "watch", "no_known_warning": "low"][r.level] ?? "insufficient_information"
+        title = DS.riskLabel(band); advice = r.disclaimer
+        factors = r.reasons.enumerated().map { SafetyFactor(code: "R\($0.offset)", label: $0.element, family: "core", points: 0, detail: "") }
+        counterfactuals = []; reports = 0; records = r.observed_transaction_count; confidence = 0; shield = r.shield
+    }
+}
+
+/// Icon for every factor the scoring engine can produce.
+func factorIcon(_ code: String) -> String {
+    switch code {
+    case "INBOUND_BREADTH": return "person.3.fill"
+    case "OUTBOUND_BREADTH": return "arrow.up.right.and.arrow.down.left"
+    case "RAPID_ONWARD", "LARGE_RELAY": return "bolt.fill"
+    case "PASS_THROUGH", "HIGH_FORWARDING": return "arrow.left.arrow.right"
+    case "SHORT_DWELL": return "timer"
+    case "FAN_IN_OUT": return "arrow.triangle.merge"
+    case "STRUCTURING": return "square.split.2x2.fill"
+    case "ROUND_TRIP": return "arrow.triangle.2.circlepath"
+    case "VICTIM_CONVERGENCE": return "person.crop.circle.badge.questionmark"
+    case "ESCALATION": return "chart.line.uptrend.xyaxis"
+    case "SCAM_AMOUNTS": return "indianrupeesign.circle.fill"
+    case "MULE_LIFECYCLE": return "clock.arrow.circlepath"
+    case "COORDINATED": return "link"
+    case "DENSE_CORE", "RING": return "circle.hexagongrid.fill"
+    case "BRIDGE": return "point.3.connected.trianglepath.dotted"
+    case "ANOMALY": return "waveform.path.ecg"
+    case "VERIFIED_REPORTS", "COMMUNITY_REPORTS": return "flag.fill"
+    case "COMPLAINTS": return "exclamationmark.bubble.fill"
+    case "INVESTIGATOR_FLAG": return "shield.lefthalf.filled.slash"
+    case "INVESTIGATOR_CLEARED": return "checkmark.shield.fill"
+    case "VERIFIED_MERCHANT": return "checkmark.seal.fill"
+    case "REGULAR_CUSTOMERS": return "storefront.fill"
+    default: return "exclamationmark.circle.fill"
+    }
+}
+
+/// 270° dial like a credit score: green → red gradient, tick marks, a marker at the score, the percentage in the middle.
+struct ScoreDial: View {
+    let score: Int?; let band: String
+    @State private var progress: Double = 0
+    @State private var shown = 0
+    var body: some View {
+        ZStack {
+            Circle().trim(from: 0, to: 0.75).stroke(DS.hair, style: StrokeStyle(lineWidth: 18, lineCap: .round)).rotationEffect(.degrees(135))
+            Circle().trim(from: 0, to: 0.75 * progress)
+                .stroke(AngularGradient(colors: [DS.safe, DS.watch, DS.review, DS.high], center: .center, startAngle: .degrees(0), endAngle: .degrees(270)),
+                        style: StrokeStyle(lineWidth: 18, lineCap: .round))
+                .rotationEffect(.degrees(135))
+            ForEach(0..<11, id: \.self) { i in
+                Capsule().fill(DS.sub.opacity(0.35)).frame(width: 2, height: i % 5 == 0 ? 10 : 5)
+                    .offset(y: -78).rotationEffect(.degrees(-135 + Double(i) * 27))
+            }
+            Circle().fill(.white).frame(width: 22, height: 22).overlay(Circle().stroke(DS.risk(band), lineWidth: 5))
+                .offset(y: -98).rotationEffect(.degrees(-135 + 270 * progress))
+                .opacity(score == nil ? 0 : 1)
+            VStack(spacing: 2) {
+                Text(score == nil ? "—" : "\(shown)%").font(DS.number(54, .heavy)).foregroundStyle(DS.ink).contentTransition(.numericText())
+                Text("RISK").font(DS.text(11, .bold)).tracking(2).foregroundStyle(DS.sub)
+                Text(DS.riskLabel(band)).font(DS.text(13, .bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 5).background(DS.risk(band), in: Capsule()).padding(.top, 4)
+            }
+        }
+        .frame(width: 220, height: 220)
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.2)) { progress = Double(score ?? 0) / 100 }
+            guard let target = score, target > 0 else { return }
+            Task { for v in stride(from: 0, through: target, by: max(1, target / 30)) { try? await Task.sleep(nanoseconds: 30_000_000); withAnimation { shown = v } }; shown = target }
+        }
+    }
+}
+
+struct ScaleBar: View {
+    let score: Int?
+    var body: some View {
+        VStack(spacing: 6) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    LinearGradient(colors: [DS.safe, DS.watch, DS.review, DS.high], startPoint: .leading, endPoint: .trailing).frame(height: 8).clipShape(Capsule())
+                    if let score { Circle().fill(.white).frame(width: 16, height: 16).overlay(Circle().stroke(DS.ink, lineWidth: 3))
+                        .offset(x: max(0, min(geo.size.width - 16, geo.size.width * CGFloat(score) / 100 - 8))) }
+                }
+            }.frame(height: 16)
+            HStack { ForEach(["Safe", "Careful", "Risky", "High"], id: \.self) { Text($0).font(DS.text(10.5, .semibold)).foregroundStyle(DS.sub).frame(maxWidth: .infinity) } }
+        }
+    }
+}
+
+struct FactorLine: View {
+    let factor: SafetyFactor
+    private var lowers: Bool { factor.points < 0 }
+    private var impact: String { abs(factor.points) >= 15 ? "High impact" : abs(factor.points) >= 8 ? "Medium impact" : factor.points == 0 ? "Rule" : "Low impact" }
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: factorIcon(factor.code)).font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(lowers ? DS.safe : DS.high).frame(width: 42, height: 42)
+                .background((lowers ? DS.safe : DS.high).opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(factor.label).font(DS.text(15, .semibold)).foregroundStyle(DS.ink).fixedSize(horizontal: false, vertical: true)
+                if !factor.detail.isEmpty { Text(factor.detail).font(DS.text(12.5)).foregroundStyle(DS.sub).fixedSize(horizontal: false, vertical: true) }
+                Text(impact).font(DS.text(11, .semibold)).foregroundStyle(DS.sub)
+            }
+            Spacer(minLength: 8)
+            if factor.points != 0 {
+                Text("\(factor.points > 0 ? "+" : "−")\(abs(factor.points))").font(DS.number(15, .heavy))
+                    .foregroundStyle(lowers ? DS.safe : DS.high).padding(.horizontal, 10).padding(.vertical, 5)
+                    .background((lowers ? DS.safe : DS.high).opacity(0.10), in: Capsule())
+            }
+        }.padding(.vertical, 8)
+    }
+}
+
+/// The full risk report: dial, verdict, key facts, what raises / lowers risk, how it could change.
+struct RiskReportView: View {
+    let model: RiskModel
+    @AppStorage("tp.voice") private var voice = false
+    @State private var synth = AVSpeechSynthesizer()
+    private var raises: [SafetyFactor] { model.factors.filter { $0.points >= 0 } }
+    private var lowers: [SafetyFactor] { model.factors.filter { $0.points < 0 } }
+    var body: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(model.name).font(DS.display(22)).foregroundStyle(DS.ink).lineLimit(1).minimumScaleFactor(0.7)
+                    if model.verified { Image(systemName: "checkmark.seal.fill").foregroundStyle(Color(hex: 0x1D9BF0)) }
+                }
+                Text(model.ref).font(DS.text(13)).foregroundStyle(DS.sub)
+            }
+            ScoreDial(score: model.score, band: model.band)
+            ScaleBar(score: model.score).padding(.horizontal, 8)
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: model.band == "low" ? "checkmark.shield.fill" : "exclamationmark.shield.fill").font(.system(size: 22)).foregroundStyle(DS.risk(model.band))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.title).font(DS.text(16, .bold)).foregroundStyle(DS.ink)
+                    Text(model.advice).font(DS.text(13.5)).foregroundStyle(DS.sub).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Button { speak() } label: { Image(systemName: "speaker.wave.2.fill").font(.system(size: 14)).foregroundStyle(DS.accent).frame(width: 34, height: 34).background(DS.accentSoft, in: Circle()) }
+                    .accessibilityLabel("Read aloud")
+            }
+            .padding(16).background(DS.risk(model.band).opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                fact("flag.fill", "\(model.reports)", "Reports")
+                fact("doc.text.fill", "\(model.records)", "Records seen")
+                fact(model.member ? "person.crop.circle.badge.checkmark" : "globe", model.member ? "Member" : "External", "Account type")
+                fact("gauge.with.dots.needle.50percent", "\(Int(model.confidence * 100))%", "Confidence")
+            }
+            if let shield = model.shield, !shield.reasons.isEmpty {
+                section("For this payment") {
+                    ForEach(shield.reasons, id: \.self) { r in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "person.fill.questionmark").foregroundStyle(DS.watch).frame(width: 22)
+                            Text(r.text).font(DS.text(14)).foregroundStyle(DS.ink).fixedSize(horizontal: false, vertical: true)
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+            if !raises.isEmpty { section("What raises the risk") { ForEach(raises, id: \.code) { FactorLine(factor: $0); if $0.code != raises.last?.code { Divider() } } } }
+            if !lowers.isEmpty { section("What lowers the risk") { ForEach(lowers, id: \.code) { FactorLine(factor: $0) } } }
+            if model.factors.isEmpty { section("Why") { Text("No warning or trust signals were found for this account.").font(DS.text(14)).foregroundStyle(DS.sub) } }
+            if !model.counterfactuals.isEmpty {
+                section("How the score could change") {
+                    ForEach(model.counterfactuals, id: \.self) { c in
+                        HStack(alignment: .top, spacing: 10) { Image(systemName: "lightbulb.fill").foregroundStyle(DS.accent).frame(width: 22)
+                            Text(c).font(DS.text(13.5)).foregroundStyle(DS.ink).fixedSize(horizontal: false, vertical: true) }.padding(.vertical, 3)
+                    }
+                }
+            }
+            Text("Advisory only. You decide whether to pay.").font(DS.text(11.5)).foregroundStyle(DS.sub)
+        }
+        .onAppear { if voice { speak() } }
+        .onDisappear { synth.stopSpeaking(at: .immediate) }
+    }
+    private func fact(_ icon: String, _ value: String, _ label: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundStyle(DS.accent).frame(width: 34, height: 34).background(DS.accentSoft, in: Circle())
+            VStack(alignment: .leading, spacing: 1) { Text(value).font(DS.number(17)).foregroundStyle(DS.ink); Text(label).font(DS.text(11.5)).foregroundStyle(DS.sub) }
+            Spacer(minLength: 0)
+        }.padding(12).background(DS.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(DS.hair))
+    }
+    private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(DS.text(13, .bold)).foregroundStyle(DS.sub).textCase(.uppercase).tracking(0.6)
+            VStack(alignment: .leading, spacing: 0) { content() }.padding(.horizontal, 14).padding(.vertical, 6)
+                .background(DS.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(DS.hair))
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func speak() {
+        synth.stopSpeaking(at: .immediate)
+        let pct = model.score.map { "Risk \($0) percent." } ?? ""
+        let u = AVSpeechUtterance(string: "\(model.title). \(pct) \(model.factors.prefix(3).map(\.label).joined(separator: ". "))")
+        u.voice = AVSpeechSynthesisVoice(language: "en-IN"); u.rate = 0.5; synth.speak(u)
+    }
+}
+
+/// Native sheet wrapping the report with pinned actions. The chosen action runs only after the sheet has closed.
+enum RiskAction { case pay, report }
+struct RiskSheet: View {
+    let model: RiskModel; let payLabel: String
+    let choose: (RiskAction?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        ScrollView(showsIndicators: false) { RiskReportView(model: model).padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 12) }
+            .background(DS.bg)
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 10) {
+                    PrimaryButton(title: payLabel, icon: "arrow.right.circle.fill", tint: ["high_review", "review"].contains(model.band) ? DS.risk(model.band) : DS.accent) { choose(.pay); dismiss() }
+                    HStack(spacing: 10) {
+                        SecondaryButton(title: L("cancel")) { choose(nil); dismiss() }
+                        SecondaryButton(title: L("report"), icon: "flag.fill", tint: DS.high) { choose(.report); dismiss() }
+                    }
+                }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8).background(.ultraThinMaterial)
+            }
+            .presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+}
+
+// =====================================================================================
+// MARK: - App shell
+// =====================================================================================
+
+enum ShellTab: Hashable { case home, activity, scan, check, profile }
+struct PayTarget: Identifiable { let id = UUID(); let vpa: String }
+
+struct ActivityItem: Identifiable, Hashable {
+    let id: String; let title: String; let subtitle: String; let amount: String; let incoming: Bool
+    let status: String; let app: String; let band: String?; let date: Date
+}
+
+struct AppShell: View {
+    @EnvironmentObject private var session: TracePaySession
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("tp.applock") private var appLock = false
+    @AppStorage("tp.lang") private var lang = "en"
+    @State private var tab: ShellTab = .home
+    @State private var payTarget: PayTarget?
+    @State private var external: ExternalQR?
+    @State private var showHelp = false
+    @State private var externalPayments: [ExternalPaymentItem] = []
+    @State private var locked = false
+    private let ticker = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
+
+    private var items: [ActivityItem] {
+        let me = session.pilotProfile?.vpa_id ?? ""
+        let local = session.transfers.map { t in
+            ActivityItem(id: "tp-\(t.id)", title: t.sender_vpa == me ? t.receiver_vpa : t.sender_vpa, subtitle: "Trace.Pay", amount: t.amount,
+                         incoming: t.receiver_vpa == me, status: t.status, app: "Trace.Pay", band: nil, date: parseDate(t.created_at))
+        }
+        let ext = externalPayments.map { e in
+            ActivityItem(id: "ext-\(e.id)", title: e.payee_name ?? e.payee_vpa, subtitle: e.app.capitalized, amount: e.amount, incoming: false,
+                         status: e.status, app: e.app, band: e.risk_band, date: parseDate(e.created_at))
+        }
+        return (local + ext).sorted { $0.date > $1.date }
+    }
+
+    var body: some View {
+        ZStack {
+            DS.bg.ignoresSafeArea()
+            Group {
+                switch tab {
+                case .home: HomeScreen7(items: items, onPay: { payTarget = PayTarget(vpa: $0) }, onScan: { tab = .scan }, onCheck: { tab = .check },
+                                        onHelp: { showHelp = true }, onSeeAll: { tab = .activity })
+                case .activity: ActivityScreen7(items: items)
+                case .scan: ScanScreen7(onTracePay: { payTarget = PayTarget(vpa: $0) }, onExternal: { external = ExternalQR(raw: $0) }, onClose: { tab = .home })
+                case .check: CheckScreen7()
+                case .profile: ProfileScreen7()
+                }
+            }
+            .id(lang)
+            .safeAreaInset(edge: .bottom) { if tab != .scan { TabBar7(tab: $tab) } }
+            if locked { LockScreen7 { locked = false } }
+        }
+        .fullScreenCover(item: $payTarget) { t in PayFlow7(prefill: t.vpa) { payTarget = nil; Task { await refresh() } } }
+        .fullScreenCover(item: $external) { e in ExternalPay7(raw: e.raw) { external = nil; Task { await refresh() } } }
+        .sheet(isPresented: $showHelp) { HelpSheet7() }
+        .task { await refresh() }
+        .onReceive(ticker) { _ in Task { await refresh() } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background && appLock { locked = true }
+            if phase == .active { Task { await refresh() } }
+        }
+    }
+
+    @MainActor private func refresh() async {
+        try? await session.refreshPilotWallet()
+        try? await session.refreshPilotTransfers()
+        if let ext = try? await session.externalPayments() { externalPayments = ext }
+    }
+}
+
+struct TabBar7: View {
+    @Binding var tab: ShellTab
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            item(.home, "house", L("home")); item(.activity, "list.bullet.rectangle", L("activity"))
+            Button { Haptic.tap(); tab = .scan } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "qrcode.viewfinder").font(.system(size: 24, weight: .semibold)).foregroundStyle(.white)
+                        .frame(width: 58, height: 58).background(DS.accent, in: Circle()).shadow(color: DS.accent.opacity(0.35), radius: 10, y: 4)
+                    Text(L("scan")).font(DS.text(10.5, .semibold)).foregroundStyle(DS.ink)
+                }.frame(maxWidth: .infinity)
+            }.accessibilityLabel(L("scan"))
+            item(.check, "checkmark.shield", L("check")); item(.profile, "person.crop.circle", L("profile"))
+        }
+        .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 2)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Rectangle().fill(DS.hair).frame(height: 1) }
+    }
+    private func item(_ t: ShellTab, _ icon: String, _ label: String) -> some View {
+        Button { Haptic.tap(); tab = t } label: {
+            VStack(spacing: 4) {
+                Image(systemName: tab == t ? icon + ".fill" : icon).font(.system(size: 20, weight: .medium))
+                Text(label).font(DS.text(10.5, .semibold))
+            }.foregroundStyle(tab == t ? DS.accent : DS.sub).frame(maxWidth: .infinity).padding(.bottom, 4)
+        }
+    }
+}
+
+struct LockScreen7: View {
+    let onUnlock: () -> Void
+    var body: some View {
+        ZStack {
+            DS.bg.ignoresSafeArea()
+            VStack(spacing: 16) {
+                Image(systemName: "lock.shield.fill").font(.system(size: 54)).foregroundStyle(DS.accent)
+                Text("Trace.Pay is locked").font(DS.display(26))
+                PrimaryButton(title: "Unlock", icon: "faceid") { unlock() }.frame(width: 220)
+            }
+        }
+        .onAppear { unlock() }
+    }
+    private func unlock() {
+        LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock Trace.Pay") { ok, _ in if ok { DispatchQueue.main.async { onUnlock() } } }
+    }
+}
+
+// =====================================================================================
+// MARK: - Home
+// =====================================================================================
+
+struct HomeScreen7: View {
+    @EnvironmentObject private var session: TracePaySession
+    let items: [ActivityItem]
+    let onPay: (String) -> Void; let onScan: () -> Void; let onCheck: () -> Void; let onHelp: () -> Void; let onSeeAll: () -> Void
+
+    private var people: [String] {
+        let me = session.pilotProfile?.vpa_id ?? ""
+        let counts = Dictionary(grouping: session.transfers.filter { $0.sender_vpa == me && $0.status == "SUCCESS" }, by: { $0.receiver_vpa }).mapValues(\.count)
+        return Array(counts.sorted { $0.value > $1.value }.map(\.key).prefix(8))
+    }
+    private let scams: [(icon: String, title: String, text: String)] = [
+        ("briefcase.fill", "Task scams", "\"Like videos, earn money\", then pay to unlock. Real jobs never ask you to pay."),
+        ("phone.down.fill", "Fake KYC calls", "No bank asks for your UPI PIN or OTP on a call or link."),
+        ("chart.line.uptrend.xyaxis", "Investment groups", "Guaranteed high returns on WhatsApp or Telegram are scams."),
+        ("arrow.down.circle.fill", "Collect requests", "You never enter a PIN to receive money."),
+    ]
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(spacing: 12) {
+                    Text(initials(session.pilotProfile?.vpa_id ?? "TP")).font(DS.number(15, .heavy)).foregroundStyle(DS.accent)
+                        .frame(width: 44, height: 44).background(DS.accentSoft, in: Circle())
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Good to see you").font(DS.text(13)).foregroundStyle(DS.sub)
+                        Text(session.pilotProfile?.full_name ?? "Trace.Pay").font(DS.text(17, .semibold)).foregroundStyle(DS.ink)
+                    }
+                    Spacer()
+                    Image(systemName: "checkmark.shield.fill").font(.system(size: 22)).foregroundStyle(DS.safe)
+                }.padding(.top, 6)
+
+                // Wallet card
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        Text("trace.pay").font(DS.text(15, .heavy)).foregroundStyle(.white)
+                        Spacer()
+                        Label("Protected", systemImage: "checkmark.shield.fill").font(DS.text(11.5, .semibold)).foregroundStyle(DS.ink)
+                            .padding(.horizontal, 10).padding(.vertical, 5).background(DS.lime, in: Capsule())
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Wallet balance").font(DS.text(12.5)).foregroundStyle(Color.white.opacity(0.75))
+                        Text(rupees(session.pilotWallet?.balance ?? "0")).font(DS.number(40, .heavy)).foregroundStyle(.white).contentTransition(.numericText())
+                    }
+                    Text(session.pilotProfile?.vpa_id ?? "").font(DS.text(13, .medium)).foregroundStyle(Color.white.opacity(0.8))
+                }
+                .padding(22)
+                .background(LinearGradient(colors: [Color(hex: 0x24104F), DS.accent, Color(hex: 0x8A6BFF)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                .shadow(color: DS.accent.opacity(0.25), radius: 18, y: 10)
+
+                HStack(spacing: 0) {
+                    action("paperplane.fill", L("pay"), DS.accent) { onPay("") }
+                    action("qrcode.viewfinder", L("scan"), DS.ink) { onScan() }
+                    action("magnifyingglass", L("check_id"), Color(hex: 0x0E7490)) { onCheck() }
+                    action("lifepreserver.fill", L("scammed"), DS.high) { onHelp() }
+                }
+
+                Button(action: onCheck) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(DS.sub)
+                        Text("Check any UPI ID before you pay").font(DS.text(15)).foregroundStyle(DS.sub)
+                        Spacer()
+                        Image(systemName: "arrow.right").foregroundStyle(DS.accent)
+                    }.padding(16).background(DS.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(DS.hair))
+                }
+
+                if !people.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(L("trusted")).font(DS.display(20)).foregroundStyle(DS.ink)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 16) {
+                                ForEach(people, id: \.self) { vpa in
+                                    Button { onPay(vpa) } label: {
+                                        VStack(spacing: 6) {
+                                            Text(initials(vpa)).font(DS.number(16, .heavy)).foregroundStyle(DS.accent).frame(width: 56, height: 56).background(DS.accentSoft, in: Circle())
+                                            Text(vpa.components(separatedBy: "@").first ?? vpa).font(DS.text(11.5, .medium)).foregroundStyle(DS.ink).lineLimit(1).frame(width: 66)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack { Text(L("recent")).font(DS.display(20)).foregroundStyle(DS.ink); Spacer()
+                        Button(L("see_all"), action: onSeeAll).font(DS.text(14, .semibold)).foregroundStyle(DS.accent) }
+                    Card(padding: 6) {
+                        VStack(spacing: 0) {
+                            if items.isEmpty { Text("No payments yet. Scan any UPI QR to pay safely.").font(DS.text(14)).foregroundStyle(DS.sub).padding(14) }
+                            ForEach(Array(items.prefix(5).enumerated()), id: \.element.id) { i, item in
+                                ActivityRow7(item: item)
+                                if i < min(items.count, 5) - 1 { Divider().padding(.leading, 64) }
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(L("stay_safe")).font(DS.display(20)).foregroundStyle(DS.ink)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(scams.indices, id: \.self) { i in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Image(systemName: scams[i].icon).font(.system(size: 18, weight: .semibold)).foregroundStyle(DS.high)
+                                        .frame(width: 40, height: 40).background(DS.high.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                                    Text(scams[i].title).font(DS.text(16, .bold)).foregroundStyle(DS.ink)
+                                    Text(scams[i].text).font(DS.text(13)).foregroundStyle(DS.sub).fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(16).frame(width: 230, height: 190, alignment: .topLeading)
+                                .background(DS.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(DS.hair))
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20).padding(.bottom, 24)
+        }
+    }
+
+    private func action(_ icon: String, _ label: String, _ tint: Color, run: @escaping () -> Void) -> some View {
+        Button { Haptic.tap(); run() } label: {
+            VStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
+                    .frame(width: 56, height: 56).background(tint, in: Circle())
+                Text(label).font(DS.text(12, .semibold)).foregroundStyle(DS.ink).lineLimit(1).minimumScaleFactor(0.8)
+            }.frame(maxWidth: .infinity)
+        }.buttonStyle(PressScaleStyle())
+    }
+}
+
+struct ActivityRow7: View {
+    let item: ActivityItem
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: item.incoming ? "arrow.down.left" : "arrow.up.right").font(.system(size: 15, weight: .bold))
+                .foregroundStyle(item.incoming ? DS.safe : DS.accent).frame(width: 44, height: 44)
+                .background((item.incoming ? DS.safe : DS.accent).opacity(0.10), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(DS.text(15, .semibold)).foregroundStyle(DS.ink).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(item.subtitle).font(DS.text(12)).foregroundStyle(DS.sub)
+                    if let band = item.band { Text(DS.riskLabel(band)).font(DS.text(10.5, .bold)).foregroundStyle(DS.risk(band))
+                        .padding(.horizontal, 7).padding(.vertical, 2).background(DS.risk(band).opacity(0.12), in: Capsule()) }
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("\(item.incoming ? "+" : "−")\(rupees(item.amount))").font(DS.number(15)).foregroundStyle(item.status == "SUCCESS" ? (item.incoming ? DS.safe : DS.ink) : DS.sub)
+                Text(item.status == "SUCCESS" ? item.date.formatted(.relative(presentation: .named)) : item.status.capitalized).font(DS.text(11.5)).foregroundStyle(DS.sub)
+            }
+        }.padding(.horizontal, 10).padding(.vertical, 11)
+    }
+}
+
+// =====================================================================================
+// MARK: - Activity
+// =====================================================================================
+
+struct ActivityScreen7: View {
+    let items: [ActivityItem]
+    @State private var filter = 0
+    struct DayTotal: Identifiable { let id: String; let total: Double }
+    private var shown: [ActivityItem] {
+        switch filter { case 1: return items.filter { $0.app == "Trace.Pay" }; case 2: return items.filter { $0.app != "Trace.Pay" }
+        case 3: return items.filter { $0.status != "SUCCESS" }; default: return items }
+    }
+    private var week: [DayTotal] {
+        let cal = Calendar.current
+        return (0..<7).reversed().map { off in
+            let day = cal.date(byAdding: .day, value: -off, to: Date()) ?? Date()
+            let total = items.filter { !$0.incoming && $0.status == "SUCCESS" && cal.isDate($0.date, inSameDayAs: day) }.reduce(0.0) { $0 + (Double($1.amount) ?? 0) }
+            return DayTotal(id: day.formatted(.dateTime.weekday(.abbreviated)), total: total)
+        }
+    }
+    private var monthSpent: Double {
+        items.filter { !$0.incoming && $0.status == "SUCCESS" && Calendar.current.isDate($0.date, equalTo: Date(), toGranularity: .month) }.reduce(0) { $0 + (Double($1.amount) ?? 0) }
+    }
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                ScreenHeader(title: L("activity"), subtitle: "Trace.Pay and other UPI apps, together")
+                Card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Spent this month").font(DS.text(13)).foregroundStyle(DS.sub)
+                        Text(rupees(monthSpent)).font(DS.number(34, .heavy)).foregroundStyle(DS.ink)
+                        Chart(week) { d in BarMark(x: .value("Day", d.id), y: .value("₹", d.total)).foregroundStyle(DS.accent.gradient).cornerRadius(6) }
+                            .frame(height: 140).chartYAxis(.hidden)
+                    }
+                }
+                Picker("Filter", selection: $filter) { Text("All").tag(0); Text("Trace.Pay").tag(1); Text("Other apps").tag(2); Text("Failed").tag(3) }.pickerStyle(.segmented)
+                Card(padding: 6) {
+                    VStack(spacing: 0) {
+                        if shown.isEmpty { Text("Nothing here yet.").font(DS.text(14)).foregroundStyle(DS.sub).padding(14) }
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { i, item in
+                            ActivityRow7(item: item); if i < shown.count - 1 { Divider().padding(.leading, 64) }
+                        }
+                    }
+                }
+            }.padding(.horizontal, 20).padding(.bottom, 24)
+        }
+    }
+}
+
+// =====================================================================================
+// MARK: - Check (Truecaller-style)
+// =====================================================================================
+
+struct CheckScreen7: View {
+    @EnvironmentObject private var session: TracePaySession
+    @AppStorage("tp.recentChecks") private var recentRaw = ""
+    @State private var query = ""
+    @State private var result: RiskModel?
+    @State private var busy = false
+    @State private var message = ""
+    @State private var reportRef: ExternalQR?
+    private var recent: [String] { recentRaw.split(separator: "\n").map(String.init) }
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                ScreenHeader(title: L("check"), subtitle: "Any UPI ID: Trace.Pay, Google Pay, PhonePe, Paytm or a bank")
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(DS.sub)
+                    TextField("name@okaxis", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled().font(DS.text(16))
+                        .submitLabel(.search).onSubmit { Task { await check() } }
+                    Button { if let s = UIPasteboard.general.string { query = s } } label: { Image(systemName: "doc.on.clipboard").foregroundStyle(DS.accent) }.accessibilityLabel("Paste")
+                }
+                .padding(16).background(DS.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(DS.hair))
+                PrimaryButton(title: L("check_id"), icon: "checkmark.shield.fill", busy: busy) { Task { await check() } }
+                if !message.isEmpty { Label(message, systemImage: "exclamationmark.circle.fill").font(DS.text(13.5)).foregroundStyle(DS.high) }
+                if result == nil && !recent.isEmpty {
+                    Text("Recent").font(DS.text(13, .bold)).foregroundStyle(DS.sub).textCase(.uppercase)
+                    ForEach(recent, id: \.self) { r in
+                        Button { query = r; Task { await check() } } label: {
+                            HStack { Image(systemName: "clock").foregroundStyle(DS.sub); Text(r).font(DS.text(15)).foregroundStyle(DS.ink); Spacer(); Image(systemName: "chevron.right").foregroundStyle(DS.sub) }
+                                .padding(.vertical, 6)
+                        }
+                    }
+                }
+                if let result {
+                    RiskReportView(model: result).id(result.id)
+                    SecondaryButton(title: "Report this account", icon: "flag.fill", tint: DS.high) { reportRef = ExternalQR(raw: result.ref) }
+                }
+            }.padding(.horizontal, 20).padding(.bottom, 24)
+        }
+        .sheet(item: $reportRef) { r in ReportSheetView(ref: r.raw) { _ in reportRef = nil } }
+    }
+    @MainActor private func check() async {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines); guard !q.isEmpty else { return }
+        busy = true; message = ""; result = nil; defer { busy = false }
+        do {
+            let l = try await session.lookup(ref: q); result = RiskModel(l)
+            recentRaw = ([l.ref] + recent.filter { $0 != l.ref }).prefix(6).joined(separator: "\n")
+        } catch { message = error.localizedDescription }
+    }
+}
+
+// =====================================================================================
+// MARK: - Scan
+// =====================================================================================
+
+struct ScanScreen7: View {
+    let onTracePay: (String) -> Void; let onExternal: (String) -> Void; let onClose: () -> Void
+    @State private var key = 0
+    @State private var message = ""
+    var body: some View {
+        ZStack(alignment: .top) {
+            QRScannerSheet(onScan: { raw in
+                if let id = TracePayID.normalize(raw) { onTracePay(id); key += 1 }
+                else if UPIQR.parse(raw) != nil { onExternal(raw); key += 1 }
+                else { message = "That QR has no UPI ID."; Haptic.error(); DispatchQueue.main.asyncAfter(deadline: .now() + 2) { message = ""; key += 1 } }
+            }, onClose: onClose)
+            .id(key).ignoresSafeArea()
+            if !message.isEmpty {
+                Label(message, systemImage: "exclamationmark.triangle.fill").font(DS.text(14, .semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 10).background(DS.high, in: Capsule()).padding(.top, 70)
+            }
+        }
+    }
+}
+
+// =====================================================================================
+// MARK: - Pay a Trace.Pay member
+// =====================================================================================
+
+struct PayFlow7: View {
+    @EnvironmentObject private var session: TracePaySession
+    let prefill: String; let onDone: () -> Void
+    enum Step { case recipient, amount, cooling, sending, done }
+    @AppStorage("tp.cooling") private var coolingOn = true
+    @AppStorage("tp.coolingMinutes") private var coolingMinutes = 1
+    @AppStorage("tp.dailyLimit") private var dailyLimit = 50000.0
+    @State private var step: Step = .recipient
+    @State private var input = ""
+    @State private var recipient: PilotRecipient?
+    @State private var amount = ""
+    @State private var risk: RiskModel?
+    @State private var pending: RiskAction?
+    @State private var reportRef: ExternalQR?
+    @State private var busy = false
+    @State private var message = ""
+    @State private var result: PilotTransferResponse?
+    @State private var remaining = 0
+    @State private var key = UUID().uuidString
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private var value: Decimal { Decimal(string: amount) ?? 0 }
+    private var isNewPayee: Bool { !session.transfers.contains { $0.receiver_vpa == recipient?.vpa_id && $0.status == "SUCCESS" } }
+    private var spentToday: Double {
+        let me = session.pilotProfile?.vpa_id
+        return session.transfers.filter { $0.sender_vpa == me && $0.status == "SUCCESS" && Calendar.current.isDateInToday(parseDate($0.created_at)) }.reduce(0) { $0 + (Double($1.amount) ?? 0) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { onDone() } label: { Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(DS.ink).frame(width: 40, height: 40).background(DS.card, in: Circle()) }
+                Spacer()
+                Text(step == .done ? "" : L("pay")).font(DS.text(17, .semibold))
+                Spacer(); Color.clear.frame(width: 40, height: 40)
+            }.padding(.horizontal, 20).padding(.top, 8)
+            Group {
+                switch step {
+                case .recipient: recipientStep
+                case .amount: amountStep
+                case .cooling: coolingStep
+                case .sending: VStack(spacing: 14) { ProgressView().scaleEffect(1.3); Text("Confirm with Face ID or passcode").font(DS.text(15)).foregroundStyle(DS.sub) }.frame(maxHeight: .infinity)
+                case .done: doneStep
+                }
+            }.padding(.horizontal, 20).frame(maxHeight: .infinity, alignment: .top)
+        }
+        .background(DS.bg.ignoresSafeArea())
+        .sheet(item: $risk, onDismiss: runPending) { m in RiskSheet(model: m, payLabel: "Pay \(rupees(amount))") { pending = $0 } }
+        .sheet(item: $reportRef) { r in ReportSheetView(ref: r.raw) { _ in reportRef = nil } }
+        .onReceive(tick) { _ in if step == .cooling && remaining > 0 { remaining -= 1; if remaining == 0 { authenticate() } } }
+        .task { if !prefill.isEmpty { input = prefill; await findRecipient() } }
+    }
+
+    private var recipientStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Who are you paying?").font(DS.display(30)).padding(.top, 20)
+            HStack(spacing: 10) {
+                Image(systemName: "at").foregroundStyle(DS.sub)
+                TextField("name@tracepay", text: $input).textInputAutocapitalization(.never).autocorrectionDisabled().font(DS.text(17))
+            }.padding(16).background(DS.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(DS.hair))
+            if !message.isEmpty { Label(message, systemImage: "exclamationmark.circle.fill").font(DS.text(13.5)).foregroundStyle(DS.high) }
+            PrimaryButton(title: L("continue"), busy: busy) { Task { await findRecipient() } }.disabled(input.isEmpty)
+            Text("Paying a Google Pay, PhonePe or Paytm QR? Use Scan.").font(DS.text(13)).foregroundStyle(DS.sub)
+        }
+    }
+
+    private var amountStep: some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 6) {
+                Text(initials(recipient?.vpa_id ?? "TP")).font(DS.number(18, .heavy)).foregroundStyle(DS.accent).frame(width: 60, height: 60).background(DS.accentSoft, in: Circle())
+                Text(recipient?.display_name ?? "").font(DS.text(17, .semibold))
+                Text(recipient?.vpa_id ?? "").font(DS.text(13)).foregroundStyle(DS.sub)
+                if isNewPayee { Label("First payment to this person", systemImage: "sparkles").font(DS.text(12, .semibold)).foregroundStyle(DS.watch) }
+            }.padding(.top, 10)
+            Text(amount.isEmpty ? "₹0" : "₹\(amount)").font(DS.number(56, .heavy)).foregroundStyle(DS.ink).contentTransition(.numericText()).animation(.snappy, value: amount)
+            Text("Balance \(rupees(session.pilotWallet?.balance ?? "0")) · today \(rupees(spentToday)) of \(rupees(dailyLimit))").font(DS.text(12.5)).foregroundStyle(DS.sub)
+            if !message.isEmpty { Text(message).font(DS.text(13.5)).foregroundStyle(DS.high).multilineTextAlignment(.center) }
+            Spacer(minLength: 0)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                ForEach(["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"], id: \.self) { k in
+                    Button { press(k) } label: {
+                        Group { if k == "⌫" { Image(systemName: "delete.left") } else { Text(k) } }
+                            .font(DS.number(26, .semibold)).foregroundStyle(DS.ink).frame(maxWidth: .infinity).frame(height: 56)
+                            .background(DS.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }.buttonStyle(PressScaleStyle())
+                }
+            }
+            PrimaryButton(title: busy ? "Checking safety…" : L("continue"), icon: "checkmark.shield.fill", busy: busy) { Task { await assess() } }
+                .disabled(value <= 0).opacity(value > 0 ? 1 : 0.5).padding(.bottom, 8)
+        }
+    }
+
+    private var coolingStep: some View {
+        VStack(spacing: 18) {
+            Spacer()
+            ZStack {
+                Circle().stroke(DS.accentSoft, lineWidth: 12)
+                Circle().trim(from: 0, to: CGFloat(remaining) / CGFloat(max(1, coolingMinutes * 60)))
+                    .stroke(DS.accent, style: StrokeStyle(lineWidth: 12, lineCap: .round)).rotationEffect(.degrees(-90)).animation(.linear(duration: 1), value: remaining)
+                Text(String(format: "%d:%02d", remaining / 60, remaining % 60)).font(DS.number(42, .heavy))
+            }.frame(width: 190, height: 190)
+            Text("Take a moment").font(DS.display(26))
+            Text("This is your first payment of \(rupees(amount)) to this person. Scammers rush you. Is this someone you know?")
+                .font(DS.text(15)).foregroundStyle(DS.sub).multilineTextAlignment(.center)
+            SecondaryButton(title: L("cancel")) { step = .amount }
+            Spacer()
+        }
+    }
+
+    private var doneStep: some View {
+        let ok = result?.status == "SUCCESS"
+        return VStack(spacing: 14) {
+            Spacer()
+            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.octagon.fill").font(.system(size: 88)).foregroundStyle(ok ? DS.safe : DS.high).symbolEffect(.bounce, value: ok)
+            Text(ok ? "Paid \(rupees(result?.amount ?? amount))" : "Payment not completed").font(DS.display(28))
+            Text(ok ? "to \(recipient?.display_name ?? recipient?.vpa_id ?? "")" : (result?.failure_reason ?? "No money moved. You can try again safely."))
+                .font(DS.text(15)).foregroundStyle(DS.sub).multilineTextAlignment(.center)
+            if let ref = result?.transfer_ref { Text(ref).font(.system(size: 12, design: .monospaced)).foregroundStyle(DS.sub) }
+            Spacer()
+            PrimaryButton(title: "Done") { onDone() }.padding(.bottom, 8)
+        }
+    }
+
+    private func press(_ k: String) {
+        Haptic.tap(); message = ""
+        if k == "⌫" { if !amount.isEmpty { amount.removeLast() }; return }
+        if k == "." && amount.contains(".") { return }
+        if let dot = amount.firstIndex(of: "."), amount.distance(from: dot, to: amount.endIndex) > 2 { return }
+        if amount.count < 9 { amount += k }
+    }
+
+    @MainActor private func findRecipient() async {
+        guard let id = TracePayID.normalize(input) else { message = TracePayID.invalidMessage; return }
+        busy = true; message = ""; defer { busy = false }
+        do { recipient = try await session.lookupPilotRecipient(vpa: id); step = .amount } catch { message = error.localizedDescription }
+    }
+
+    @MainActor private func assess() async {
+        guard let r = recipient else { return }
+        let v = Double(amount) ?? 0
+        if v > 100000 { message = "Each payment is limited to ₹1,00,000."; return }
+        if let bal = Double(session.pilotWallet?.balance ?? ""), v > bal { message = "That's more than your balance."; return }
+        if spentToday + v > dailyLimit { message = "This passes your daily limit of \(rupees(dailyLimit)). You can change it in Profile."; return }
+        busy = true; message = ""; defer { busy = false }
+        do {
+            let rr = try await session.assess(recipientRef: r.vpa_id, amount: value)
+            if let look = try? await session.lookup(ref: r.vpa_id, amount: value) { risk = RiskModel(look) } else { risk = RiskModel(fallback: rr, name: r.display_name) }
+            key = UUID().uuidString
+        } catch { message = error.localizedDescription }
+    }
+
+    private func runPending() {
+        let action = pending; pending = nil
+        switch action {
+        case .pay: if coolingOn && isNewPayee && (Double(amount) ?? 0) >= 5000 { remaining = coolingMinutes * 60; step = .cooling } else { authenticate() }
+        case .report: reportRef = ExternalQR(raw: recipient?.vpa_id ?? input)
+        case .none: break
+        }
+    }
+
+    private func authenticate() {
+        step = .sending
+        LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Confirm payment of \(rupees(amount))") { ok, err in
+            DispatchQueue.main.async { if ok { Task { await send() } } else { step = .amount; message = err?.localizedDescription ?? "Not confirmed." } }
+        }
+    }
+
+    @MainActor private func send() async {
+        guard let r = recipient else { return }
+        do {
+            result = try await session.makePilotTransfer(receiverVPA: r.vpa_id, amount: value, note: "", idempotencyKey: key)
+            if result?.status == "SUCCESS" { Haptic.success() } else { Haptic.error() }
+            step = .done
+            try? await session.refreshPilotWallet(); try? await session.refreshPilotTransfers()
+        } catch { message = "\(error.localizedDescription) Retrying is safe."; step = .amount }
+    }
+}
+
+// =====================================================================================
+// MARK: - Pay any UPI QR (Google Pay, PhonePe, Paytm, BHIM)
+// =====================================================================================
+
+struct UPIApp: Identifiable { let id: String; let name: String; let schemes: [String]; let store: String; let tint: Color }
+
+struct ExternalPay7: View {
+    @EnvironmentObject private var session: TracePaySession
+    @Environment(\.scenePhase) private var scenePhase
+    let raw: String; let onDone: () -> Void
+    enum Prompt: Identifiable { case confirm, notInstalled; var id: Int { self == .confirm ? 0 : 1 } }
+    private let catalogue: [UPIApp] = [
+        UPIApp(id: "gpay", name: "Google Pay", schemes: ["gpay://upi/pay", "tez://upi/pay"], store: "https://apps.apple.com/in/app/google-pay/id1193357041", tint: Color(hex: 0x1A73E8)),
+        UPIApp(id: "phonepe", name: "PhonePe", schemes: ["phonepe://pay", "phonepe://upi/pay"], store: "https://apps.apple.com/in/app/phonepe/id1170055821", tint: Color(hex: 0x5F259F)),
+        UPIApp(id: "paytm", name: "Paytm", schemes: ["paytmmp://pay", "paytm://upi/pay"], store: "https://apps.apple.com/in/app/paytm/id473941634", tint: Color(hex: 0x00BAF2)),
+        UPIApp(id: "bhim", name: "BHIM", schemes: ["bhim://upi/pay", "upi://pay"], store: "https://apps.apple.com/in/app/bhim/id1200315258", tint: Color(hex: 0x0B6E4F)),
+    ]
+    @State private var amount = ""
+    @State private var chosen: UPIApp?
+    @State private var risk: RiskModel?
+    @State private var look: SafetyLookup?
+    @State private var pending: RiskAction?
+    @State private var reportRef: ExternalQR?
+    @State private var prompt: Prompt?
+    @State private var awaiting = false
+    @State private var busy = false
+    @State private var message = ""
+    @State private var recorded: String?
+    private var qr: [String: String]? { UPIQR.parse(raw) }
+    private func installed(_ app: UPIApp) -> Bool { app.schemes.contains { s in URL(string: s).map { UIApplication.shared.canOpenURL($0) } ?? false } }
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Button(action: onDone) { Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(DS.ink).frame(width: 40, height: 40).background(DS.card, in: Circle()) }
+                    Spacer(); Text("Pay any UPI QR").font(DS.text(17, .semibold)); Spacer(); Color.clear.frame(width: 40, height: 40)
+                }.padding(.top, 8)
+                if let qr {
+                    VStack(spacing: 8) {
+                        Text(initials(qr["pa"] ?? "UP")).font(DS.number(20, .heavy)).foregroundStyle(DS.accent).frame(width: 64, height: 64).background(DS.accentSoft, in: Circle())
+                        Text(qr["pn"] ?? qr["pa"] ?? "").font(DS.display(24)).multilineTextAlignment(.center)
+                        Text(qr["pa"] ?? "").font(DS.text(13.5)).foregroundStyle(DS.sub)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 8)
+                    HStack(spacing: 6) {
+                        Text("₹").font(DS.number(36, .heavy)).foregroundStyle(DS.sub)
+                        TextField("0", text: $amount).keyboardType(.decimalPad).font(DS.number(44, .heavy)).foregroundStyle(DS.ink)
+                    }.padding(.horizontal, 18).padding(.vertical, 10).background(DS.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(DS.hair))
+                    Text("Pay with").font(DS.text(13, .bold)).foregroundStyle(DS.sub).textCase(.uppercase)
+                    VStack(spacing: 10) {
+                        ForEach(catalogue) { app in
+                            let ok = installed(app)
+                            Button { chosen = app; Task { await check() } } label: {
+                                HStack(spacing: 14) {
+                                    Text(String(app.name.prefix(1))).font(DS.number(18, .heavy)).foregroundStyle(.white).frame(width: 44, height: 44).background(app.tint, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(app.name).font(DS.text(16, .semibold)).foregroundStyle(DS.ink)
+                                        Text(ok ? "Installed" : "Not installed").font(DS.text(12)).foregroundStyle(ok ? DS.safe : DS.sub)
+                                    }
+                                    Spacer()
+                                    if busy && chosen?.id == app.id { ProgressView() } else { Image(systemName: "chevron.right").foregroundStyle(DS.sub) }
+                                }.padding(14).background(DS.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(DS.hair))
+                            }.disabled(busy)
+                        }
+                    }
+                    if !message.isEmpty { Label(message, systemImage: "exclamationmark.circle.fill").font(DS.text(13.5)).foregroundStyle(DS.high) }
+                    if let recorded {
+                        Label(recorded == "SUCCESS" ? "Payment recorded in your activity" : "Recorded as \(recorded.lowercased())", systemImage: "checkmark.circle.fill")
+                            .font(DS.text(14, .semibold)).foregroundStyle(DS.safe)
+                    }
+                    Label("Trace.Pay checks the account first. Your UPI PIN is only entered in your UPI app.", systemImage: "lock.shield").font(DS.text(12.5)).foregroundStyle(DS.sub)
+                } else {
+                    Text("This QR has no valid UPI ID.").font(DS.text(15)).foregroundStyle(DS.high)
+                }
+            }.padding(.horizontal, 20).padding(.bottom, 24)
+        }
+        .background(DS.bg.ignoresSafeArea())
+        .onAppear { amount = qr?["am"] ?? "" }
+        .sheet(item: $risk, onDismiss: runPending) { m in RiskSheet(model: m, payLabel: "Pay \(rupees(amount)) with \(chosen?.name ?? "UPI")") { pending = $0 } }
+        .sheet(item: $reportRef) { r in ReportSheetView(ref: r.raw) { _ in reportRef = nil } }
+        .onChange(of: scenePhase) { _, phase in if phase == .active && awaiting { awaiting = false; prompt = .confirm } }
+        .alert(item: $prompt) { p in
+            switch p {
+            case .confirm:
+                return Alert(title: Text("Did the payment go through?"), message: Text("UPI apps on iPhone don't report back, so confirm to record it."),
+                             primaryButton: .default(Text("Yes, I paid")) { record("SUCCESS") }, secondaryButton: .cancel(Text("No")) { record("CANCELLED") })
+            case .notInstalled:
+                return Alert(title: Text("\(chosen?.name ?? "This app") isn't installed"), message: Text("The UPI ID has been copied. Pay in any UPI app, or install this one."),
+                             primaryButton: .default(Text("Get \(chosen?.name ?? "app")")) { if let s = chosen?.store, let u = URL(string: s) { UIApplication.shared.open(u) } },
+                             secondaryButton: .cancel(Text("OK")))
+            }
+        }
+    }
+
+    @MainActor private func check() async {
+        guard let v = Decimal(string: amount), v > 0 else { message = "Enter the amount first."; return }
+        busy = true; message = ""; defer { busy = false }
+        do { let l = try await session.lookup(ref: raw, amount: v); look = l; risk = RiskModel(l) } catch { message = error.localizedDescription }
+    }
+
+    private func runPending() {
+        let action = pending; pending = nil
+        switch action {
+        case .pay: launch()
+        case .report: reportRef = ExternalQR(raw: qr?["pa"] ?? raw)
+        case .none: break
+        }
+    }
+
+    /// Open the chosen UPI app with the payment details. Uses the first scheme the phone can open.
+    private func launch() {
+        guard let qr, let app = chosen else { return }
+        let items = [URLQueryItem(name: "pa", value: qr["pa"]), URLQueryItem(name: "pn", value: look?.display_name ?? qr["pn"] ?? qr["pa"]),
+                     URLQueryItem(name: "am", value: amount), URLQueryItem(name: "cu", value: "INR"), URLQueryItem(name: "tn", value: qr["tn"] ?? "Checked with Trace.Pay")]
+        let urls: [URL] = app.schemes.compactMap { s in var c = URLComponents(string: s); c?.queryItems = items; return c?.url }
+        guard let url = urls.first(where: { UIApplication.shared.canOpenURL($0) }) else {
+            UIPasteboard.general.string = qr["pa"]; prompt = .notInstalled; return
+        }
+        UIApplication.shared.open(url, options: [:]) { ok in
+            DispatchQueue.main.async {
+                if ok { awaiting = true } else { UIPasteboard.general.string = qr["pa"]; prompt = .notInstalled }
+            }
+        }
+    }
+
+    private func record(_ status: String) {
+        guard let qr else { return }
+        Task {
+            do {
+                try await session.recordExternalPayment(ExternalPaymentBody(payee: qr["pa"] ?? raw, payee_name: look?.display_name ?? qr["pn"], amount: amount,
+                    app: chosen?.id ?? "upi", status: status, source: "manual", upi_txn_id: nil, risk_score: look?.score, risk_band: look?.band))
+                recorded = status; if status == "SUCCESS" { Haptic.success() }
+            } catch { message = error.localizedDescription }
+        }
+    }
+}
+
+// =====================================================================================
+// MARK: - Help (I've been scammed)
+// =====================================================================================
+
+struct HelpSheet7: View {
+    @State private var scammer = ""
+    @State private var report: ExternalQR?
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                Image(systemName: "lifepreserver.fill").font(.system(size: 40)).foregroundStyle(DS.high).padding(.top, 24)
+                Text("Act within the first hour").font(DS.display(28))
+                Text("Money reported quickly is the easiest to freeze. Do these now:").font(DS.text(15)).foregroundStyle(DS.sub)
+                step("phone.fill", "Call 1930", "National cyber-crime helpline. Share the amount, time and UPI ID you paid.", "tel://1930")
+                step("doc.text.fill", "File a complaint", "Report at cybercrime.gov.in. Keep screenshots of the chat and the payment.", "https://cybercrime.gov.in")
+                step("building.columns.fill", "Call your bank", "Ask them to block the transaction and raise a dispute. Use the number on your card or bank app.", nil)
+                Card {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Warn others").font(DS.text(16, .bold))
+                        TextField("Scammer's UPI ID", text: $scammer).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .padding(12).background(DS.bg, in: RoundedRectangle(cornerRadius: 12))
+                        PrimaryButton(title: "Report on Trace.Pay", icon: "flag.fill", tint: DS.high) { report = ExternalQR(raw: scammer) }
+                            .disabled(UPIQR.parse(scammer) == nil).opacity(UPIQR.parse(scammer) == nil ? 0.5 : 1)
+                    }
+                }
+                Text("Never share your UPI PIN or OTP, and never install screen-sharing apps when a caller asks.").font(DS.text(12.5)).foregroundStyle(DS.sub)
+            }.padding(.horizontal, 20).padding(.bottom, 24)
+        }
+        .background(DS.bg.ignoresSafeArea())
+        .presentationDragIndicator(.visible)
+        .sheet(item: $report) { r in ReportSheetView(ref: r.raw) { _ in report = nil } }
+    }
+    private func step(_ icon: String, _ title: String, _ text: String, _ link: String?) -> some View {
+        Button { if let link, let url = URL(string: link) { UIApplication.shared.open(url) } } label: {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: icon).font(.system(size: 17, weight: .semibold)).foregroundStyle(.white).frame(width: 44, height: 44).background(DS.high, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(DS.text(16, .bold)).foregroundStyle(DS.ink)
+                    Text(text).font(DS.text(13.5)).foregroundStyle(DS.sub).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if link != nil { Image(systemName: "arrow.up.right").foregroundStyle(DS.sub) }
+            }.padding(16).background(DS.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(DS.hair))
+        }.disabled(link == nil)
+    }
+}
+
+// =====================================================================================
+// MARK: - Profile
+// =====================================================================================
+
+func makeQR(_ text: String) -> UIImage? {
+    let f = CIFilter.qrCodeGenerator(); f.message = Data(text.utf8); f.correctionLevel = "M"
+    guard let out = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)), let cg = CIContext().createCGImage(out, from: out.extent) else { return nil }
+    return UIImage(cgImage: cg)
+}
+
+struct ProfileScreen7: View {
+    @EnvironmentObject private var session: TracePaySession
+    @AppStorage("tp.cooling") private var coolingOn = true
+    @AppStorage("tp.coolingMinutes") private var coolingMinutes = 1
+    @AppStorage("tp.dailyLimit") private var dailyLimit = 50000.0
+    @AppStorage("tp.applock") private var appLock = false
+    @AppStorage("tp.voice") private var voice = false
+    @AppStorage("tp.haptics") private var haptics = true
+    @AppStorage("tp.lang") private var lang = "en"
+    @State private var showQR = false
+    @State private var confirmLogout = false
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                ScreenHeader(title: L("profile"))
+                Card {
+                    HStack(spacing: 14) {
+                        Text(initials(session.pilotProfile?.vpa_id ?? "TP")).font(DS.number(20, .heavy)).foregroundStyle(DS.accent).frame(width: 60, height: 60).background(DS.accentSoft, in: Circle())
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(session.pilotProfile?.full_name ?? "").font(DS.text(18, .semibold))
+                            Text(session.pilotProfile?.vpa_id ?? "").font(DS.text(13.5)).foregroundStyle(DS.sub)
+                        }
+                        Spacer()
+                        Button { showQR = true } label: { Image(systemName: "qrcode").font(.system(size: 18, weight: .semibold)).foregroundStyle(.white).frame(width: 44, height: 44).background(DS.accent, in: Circle()) }
+                            .accessibilityLabel("My QR")
+                    }
+                }
+                group("Payment safety") {
+                    Toggle(isOn: $coolingOn) { row("hourglass", "Cooling-off for new payees", "Wait before a first payment of ₹5,000 or more") }
+                    if coolingOn { Picker("Wait", selection: $coolingMinutes) { Text("1 min").tag(1); Text("5 min").tag(5); Text("10 min").tag(10) }.pickerStyle(.segmented).padding(.vertical, 6) }
+                    Divider()
+                    Stepper(value: $dailyLimit, in: 1000...100000, step: 1000) { row("gauge.with.needle", "Daily limit", rupees(dailyLimit)) }
+                    Divider()
+                    Toggle(isOn: $voice) { row("speaker.wave.2.fill", "Read risk aloud", "Speaks the verdict on the risk report") }
+                }
+                group("App") {
+                    Toggle(isOn: $appLock) { row("lock.fill", "App lock", "Face ID or passcode when you return") }
+                    Divider()
+                    Toggle(isOn: $haptics) { row("hand.tap.fill", "Haptics", "Vibration feedback") }
+                    Divider()
+                    HStack { row("globe", "Language", ""); Spacer()
+                        Picker("Language", selection: $lang) { ForEach(Lang.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) } }.tint(DS.accent) }
+                }
+                SecondaryButton(title: "Sign out", icon: "rectangle.portrait.and.arrow.right", tint: DS.high) { confirmLogout = true }
+            }.padding(.horizontal, 20).padding(.bottom, 24)
+        }
+        .sheet(isPresented: $showQR) { MyQR7() }
+        .confirmationDialog("Sign out of Trace.Pay?", isPresented: $confirmLogout, titleVisibility: .visible) { Button("Sign out", role: .destructive) { session.lock() } }
+    }
+    private func group<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(DS.text(13, .bold)).foregroundStyle(DS.sub).textCase(.uppercase)
+            VStack(spacing: 10) { content() }.padding(16).tint(DS.accent)
+                .background(DS.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(DS.hair))
+        }
+    }
+    private func row(_ icon: String, _ title: String, _ sub: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundStyle(DS.accent).frame(width: 34, height: 34).background(DS.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(DS.text(15, .medium)).foregroundStyle(DS.ink)
+                if !sub.isEmpty { Text(sub).font(DS.text(12)).foregroundStyle(DS.sub) }
+            }
+        }
+    }
+}
+
+struct MyQR7: View {
+    @EnvironmentObject private var session: TracePaySession
+    var body: some View {
+        let vpa = session.pilotProfile?.vpa_id ?? ""
+        let name = session.pilotProfile?.full_name ?? ""
+        let payload = "upi://pay?pa=\(vpa)&pn=\(name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name)&cu=INR"
+        let image = makeQR(payload)
+        VStack(spacing: 16) {
+            Text("Scan to pay me").font(DS.display(26)).padding(.top, 28)
+            if let image {
+                Image(uiImage: image).interpolation(.none).resizable().scaledToFit().frame(width: 230, height: 230).padding(18)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(DS.hair))
+            }
+            Text(name).font(DS.text(18, .semibold)); Text(vpa).font(DS.text(14)).foregroundStyle(DS.sub)
+            if let image {
+                ShareLink(item: Image(uiImage: image), preview: SharePreview("My Trace.Pay QR", image: Image(uiImage: image))) {
+                    Label("Share", systemImage: "square.and.arrow.up").font(DS.text(16, .semibold)).foregroundStyle(.white).padding(.horizontal, 30).padding(.vertical, 14).background(DS.accent, in: Capsule())
+                }
+            }
+            Spacer()
+        }.frame(maxWidth: .infinity).background(DS.bg.ignoresSafeArea()).presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
 }

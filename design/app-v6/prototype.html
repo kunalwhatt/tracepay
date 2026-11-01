@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>trace.pay · App prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --white:#FFFFFF; --canvas:#F7F5FD; --ink:#120A2B; --ink-2:#2B2347; --muted:#6B6585; --faint:#A39DBB; --hair:#ECE8F5;
+  --violet:#5B2EFF; --violet-d:#3A17C9; --violet-dd:#24108A; --violet-l:#8F6BFF; --violet-soft:#F1EDFF; --lime:#C6FF3D;
+  --good:#0A9D5A; --good-bg:#E6F6EE; --warn:#E59A00; --warn-bg:#FFF4DC; --bad:#E03E2D; --bad-bg:#FDEAE7;
+  --font:"Lexend",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color-scheme:light; box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);background:#ECE9F5;color:var(--ink);-webkit-font-smoothing:antialiased;font-weight:400}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input{font:inherit;color:inherit}
+button:focus-visible,input:focus-visible{outline:2px solid var(--violet);outline-offset:3px;border-radius:8px}
+svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.num{font-variant-numeric:tabular-nums}
+
+/* type */
+.d1{font-weight:600;font-size:34px;line-height:1.1;letter-spacing:-.03em}
+.d2{font-weight:600;font-size:26px;line-height:1.15;letter-spacing:-.025em}
+.d3{font-weight:600;font-size:20px;line-height:1.2;letter-spacing:-.02em}
+.t1{font-weight:500;font-size:16px;line-height:1.35;letter-spacing:-.01em}
+.t2{font-weight:500;font-size:14.5px;line-height:1.35}
+.b1{font-weight:400;font-size:14.5px;line-height:1.55;color:var(--muted)}
+.b2{font-weight:400;font-size:12.5px;line-height:1.45;color:var(--muted)}
+.cap{font-weight:500;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+
+/* stage */
+.stage{min-height:100%;display:flex;gap:48px;align-items:center;justify-content:center;padding:28px}
+.phone{width:390px;height:844px;border-radius:56px;background:var(--white);box-shadow:0 0 0 11px #0E0822,0 0 0 12px #2b2448,0 50px 100px rgba(18,10,43,.25);position:relative;overflow:hidden;flex:none}
+.notch{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:118px;height:34px;border-radius:20px;background:#0E0822;z-index:95}
+.guide{max-width:320px}
+.guide img{height:40px;display:block;margin-bottom:22px}
+.guide h1{font-weight:600;font-size:30px;letter-spacing:-.03em;line-height:1.12}
+.guide p{color:var(--muted);margin:10px 0 20px;line-height:1.55;font-size:14.5px}
+.guide ol{list-style:none;display:grid;gap:8px}
+.guide button{width:100%;text-align:left;padding:12px 14px;background:#fff;border:1px solid var(--hair);border-radius:14px;display:flex;gap:12px;align-items:center;font-weight:500;transition:border-color .15s,transform .15s}
+.guide button:hover{border-color:var(--violet-l);transform:translateX(2px)}
+.guide button span{display:block;font-weight:400;font-size:12.5px;color:var(--muted)}
+.guide b{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;background:var(--violet-soft);color:var(--violet);font-weight:600;font-size:13px;flex:none}
+@media (max-width:820px){ .stage{padding:0} .guide{display:none} .phone{width:100%;height:100dvh;border-radius:0;box-shadow:none} .notch{display:none} }
+
+/* surfaces */
+.app{position:absolute;inset:0}
+.screen{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;padding:64px 22px 118px;scrollbar-width:none;
+  background:radial-gradient(120% 34% at 100% 0%,rgba(143,107,255,.13),transparent 70%),radial-gradient(80% 22% at 0% 0%,rgba(198,255,61,.10),transparent 70%),var(--white)}
+.screen::-webkit-scrollbar{display:none}
+.screen.full{padding-bottom:32px}
+.enter{animation:enter .45s cubic-bezier(.2,.8,.2,1)}
+@keyframes enter{from{opacity:0;transform:translateY(14px)}}
+.rise > *{animation:rise .55s cubic-bezier(.2,.8,.2,1) backwards}
+.rise > *:nth-child(2){animation-delay:.05s}.rise > *:nth-child(3){animation-delay:.1s}.rise > *:nth-child(4){animation-delay:.15s}.rise > *:nth-child(5){animation-delay:.2s}.rise > *:nth-child(6){animation-delay:.25s}.rise > *:nth-child(7){animation-delay:.3s}.rise > *:nth-child(8){animation-delay:.35s}
+@keyframes rise{from{opacity:0;transform:translateY(18px)}}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+.row{display:flex;align-items:center;gap:12px}
+.between{justify-content:space-between}
+.stack{display:grid;gap:12px}
+.card{background:var(--white);border:1px solid var(--hair);border-radius:20px}
+.soft{background:var(--canvas);border-radius:20px}
+.section{margin-top:30px}
+.shead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.link{font-weight:500;font-size:13.5px;color:var(--violet)}
+
+/* brand signature: logo corner squares */
+.corners{position:relative}
+.corners::before{content:"";position:absolute;inset:-5px;pointer-events:none;
+  background:linear-gradient(var(--sq,#8F6BFF),var(--sq,#8F6BFF)) top left/10px 10px no-repeat,linear-gradient(var(--sq,#8F6BFF),var(--sq,#8F6BFF)) top right/10px 10px no-repeat,
+             linear-gradient(var(--sq,#8F6BFF),var(--sq,#8F6BFF)) bottom left/10px 10px no-repeat,linear-gradient(var(--sq,#8F6BFF),var(--sq,#8F6BFF)) bottom right/10px 10px no-repeat;z-index:2}
+.brandmark{display:block}
+
+/* NeoPOP elevated buttons, CRED-style */
+.np{--face:var(--ink);--er:var(--violet-d);--eb:var(--violet-dd);--fg:#fff;--d:4px;
+  position:relative;display:inline-flex;align-items:center;justify-content:center;gap:10px;height:56px;padding:0 24px;margin:0 var(--d) var(--d) 0;
+  background:var(--face);color:var(--fg);font-weight:500;font-size:15.5px;letter-spacing:.01em;transition:transform .07s ease-out}
+.np::before,.np::after{content:"";position:absolute;transition:all .07s ease-out}
+.np::after{top:calc(var(--d) / 2);right:calc(-1 * var(--d));width:var(--d);height:100%;background:var(--er);transform:skewY(45deg);transform-origin:top left}
+.np::before{left:calc(var(--d) / 2);bottom:calc(-1 * var(--d));height:var(--d);width:100%;background:var(--eb);transform:skewX(45deg);transform-origin:top left}
+.np:active{transform:translate(var(--d),var(--d))}
+.np:active::after{width:0;right:0}
+.np:active::before{height:0;bottom:0}
+.np.full{width:calc(100% - var(--d))}
+.np.violet{--face:var(--violet)}
+.np.white{--face:#fff;--er:#DCD6EA;--eb:#C6BDDD;--fg:var(--ink);box-shadow:inset 0 0 0 1px var(--hair)}
+.np.danger{--face:var(--bad);--er:#B42A1B;--eb:#8A1D12}
+.np.lime{--face:var(--lime);--er:#98CC1E;--eb:#739C10;--fg:var(--ink)}
+.np[disabled]{--face:#EEEBF5;--er:#E2DDEE;--eb:#D5CEE6;--fg:#ABA5C2;pointer-events:none}
+.np .arrow{font-size:18px;font-weight:300}
+.iconbtn{width:44px;height:44px;border-radius:14px;background:var(--white);border:1px solid var(--hair);display:grid;place-items:center;position:relative;flex:none}
+.iconbtn .dot{position:absolute;top:10px;right:11px;width:8px;height:8px;border-radius:2px;background:var(--bad);border:2px solid #fff}
+
+/* inputs */
+.label{margin:0 0 8px 2px}
+.field{display:flex;align-items:center;gap:12px;height:58px;padding:0 18px;background:var(--canvas);border:1.5px solid transparent;border-radius:16px;transition:all .15s}
+.field:focus-within{background:#fff;border-color:var(--violet)}
+.field input{flex:1;border:0;background:none;outline:none;font-weight:500;font-size:16px;min-width:0}
+.field .pre{font-weight:500;color:var(--muted);padding-right:12px;border-right:1px solid var(--hair)}
+.field svg{color:var(--faint)}
+.switch{display:flex;padding:4px;border-radius:14px;background:var(--canvas);margin-bottom:18px}
+.switch button{flex:1;height:44px;border-radius:11px;font-weight:500;font-size:14px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s}
+.switch button.on{background:#fff;color:var(--ink);box-shadow:0 2px 10px rgba(18,10,43,.08)}
+.avatar{border-radius:30%;display:grid;place-items:center;font-weight:600;background:var(--violet-soft);color:var(--violet);flex:none}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:99px;font-weight:500;font-size:12px}
+
+/* welcome */
+.welcome{position:absolute;inset:0;padding:70px 24px 30px;display:flex;flex-direction:column;
+  background:radial-gradient(90% 50% at 50% 26%,rgba(143,107,255,.20),transparent 70%),radial-gradient(50% 24% at 85% 60%,rgba(198,255,61,.14),transparent 70%),#fff}
+.welcome .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.app-icon{width:132px;height:132px;position:relative;margin-bottom:34px;animation:bob 5s ease-in-out infinite}
+.app-icon img{width:100%;height:100%;filter:drop-shadow(0 24px 30px rgba(91,46,255,.35))}
+@keyframes bob{50%{transform:translateY(-8px)}}
+.float-px{position:absolute;width:12px;height:12px;background:var(--violet-l);border-radius:2px;opacity:.6;animation:drift 7s ease-in-out infinite}
+@keyframes drift{50%{transform:translate(8px,-14px) rotate(45deg)}}
+.feat{display:grid;gap:12px;width:100%;margin-top:30px;text-align:left}
+.feat div{display:flex;gap:14px;align-items:center}
+.feat .fi{width:42px;height:42px;border-radius:13px;background:var(--violet-soft);color:var(--violet);display:grid;place-items:center;flex:none}
+.progress{display:flex;gap:6px;margin:20px 0 28px}
+.progress i{flex:1;height:4px;border-radius:2px;background:var(--hair);overflow:hidden;position:relative}
+.progress i.on::after{content:"";position:absolute;inset:0;background:var(--violet);animation:fill .5s ease-out}
+@keyframes fill{from{transform:translateX(-100%)}}
+.strength{display:flex;gap:6px;margin-top:12px}
+.strength i{flex:1;height:5px;border-radius:3px;background:var(--hair);transition:background .25s}
+.rules{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}
+.rules span{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--faint)}
+.rules span svg{width:16px;height:16px}
+.rules span.ok{color:var(--good)}
+.cam{height:350px;border-radius:26px;background:radial-gradient(100% 80% at 50% 35%,#3c2a7a,#110828);position:relative;display:grid;place-items:center;overflow:hidden}
+.oval{width:196px;height:256px;border-radius:50%;border:3px dashed rgba(255,255,255,.5);position:relative;transition:all .35s}
+.oval.ok{border-style:solid;border-color:var(--lime);box-shadow:0 0 0 10px rgba(198,255,61,.14)}
+.face{position:absolute;inset:36px 42px;border-radius:50%;background:radial-gradient(circle at 50% 40%,#c99a7a,#8a6047 70%)}
+.camtag{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);padding:9px 16px;border-radius:99px;background:rgba(255,255,255,.14);color:#fff;font-weight:500;font-size:13px;white-space:nowrap;backdrop-filter:blur(10px);transition:all .3s}
+.camtag.ok{background:var(--lime);color:var(--ink)}
+.lockart{width:150px;height:150px;margin:10px auto 26px;border-radius:40px;background:linear-gradient(150deg,var(--violet),var(--violet-dd));display:grid;place-items:center;color:#fff;box-shadow:0 30px 50px -18px rgba(91,46,255,.55)}
+.lockart svg{width:70px;height:70px;stroke-width:1.4}
+.methods{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}
+.methods div{padding:14px 8px;text-align:center;border-radius:16px;background:var(--canvas);font-size:12.5px;color:var(--muted)}
+.methods div svg{display:block;margin:0 auto 8px;color:var(--violet)}
+.methods div.on{background:var(--violet-soft);color:var(--ink);box-shadow:inset 0 0 0 1.5px var(--violet)}
+
+/* system biometric prompt (simulated OS sheet) */
+.sysprompt{position:absolute;inset:0;z-index:90;background:rgba(10,6,24,.42);backdrop-filter:blur(6px);display:grid;place-items:center;animation:fadein .2s}
+@keyframes fadein{from{opacity:0}}
+.sysprompt .box{width:250px;border-radius:26px;background:rgba(255,255,255,.96);padding:26px 20px 18px;text-align:center;box-shadow:0 30px 60px -20px rgba(0,0,0,.4);animation:sys .3s cubic-bezier(.2,1.3,.4,1)}
+@keyframes sys{from{transform:scale(.85);opacity:0}}
+.sysprompt .fid{width:70px;height:70px;margin:0 auto 14px;color:var(--violet);position:relative}
+.sysprompt .fid svg{width:70px;height:70px;stroke-width:1.4}
+.sysprompt .fid.scanning svg{animation:pulse 1s ease-in-out infinite}
+.sysprompt .fid.ok svg{color:var(--good)}
+@keyframes pulse{50%{transform:scale(.9);opacity:.6}}
+.sysprompt .alt{margin-top:16px;padding-top:12px;border-top:1px solid var(--hair);color:var(--violet);font-weight:500;font-size:14px;width:100%}
+
+/* home */
+.topbar{display:flex;align-items:center;gap:10px}
+.topbar img{height:30px;margin-right:auto}
+.hello{margin-top:26px}
+.hero-card{margin-top:20px;border-radius:28px;padding:22px;color:#fff;position:relative;overflow:hidden;
+  background:radial-gradient(120% 90% at 100% 0%,#8F6BFF 0%,transparent 55%),linear-gradient(150deg,#5B2EFF 0%,#3A17C9 55%,#24108A 100%);box-shadow:0 34px 60px -26px rgba(58,23,201,.75)}
+.hero-card .px{position:absolute;right:-6px;top:6px;width:170px;height:170px;opacity:.13}
+.hero-card .bal{font-weight:600;font-size:42px;letter-spacing:-.03em;margin:4px 0 4px}
+.hero-card .vpa{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:12px;background:rgba(255,255,255,.12);font-size:13px;font-weight:400}
+.hero-card .ha{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:22px}
+.hero-card .ha button{height:50px;border-radius:15px;font-weight:500;font-size:14.5px;display:flex;align-items:center;justify-content:center;gap:8px}
+.hero-card .ha .lime{background:var(--lime);color:var(--ink)}
+.hero-card .ha .glass{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.18)}
+.qa{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:24px}
+.qa button{display:flex;flex-direction:column;align-items:center;gap:9px;font-size:12.5px;font-weight:500;color:var(--ink-2)}
+.qa .q{width:62px;height:62px;border-radius:20px;display:grid;place-items:center;background:var(--canvas);color:var(--violet);transition:transform .15s,background .15s}
+.qa button:active .q{transform:scale(.93);background:var(--violet-soft)}
+.qa .q.sos{color:var(--bad);background:var(--bad-bg)}
+.safety{display:flex;gap:16px;align-items:center;padding:18px}
+.ringmini{width:66px;height:66px;position:relative;flex:none}
+.ringmini > svg{width:66px;height:66px;transform:rotate(-90deg)}
+.ringmini b{position:absolute;inset:0;display:grid;place-items:center;color:var(--good)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);margin-top:14px;padding-top:14px;border-top:1px solid var(--hair)}
+.stats div{text-align:center}
+.stats b{display:block;font-weight:600;font-size:19px;letter-spacing:-.02em}
+.banner{display:flex;gap:14px;align-items:center;padding:16px;border-radius:20px;background:var(--bad-bg);width:100%;text-align:left}
+.banner .bi{width:42px;height:42px;border-radius:13px;background:#fff;color:var(--bad);display:grid;place-items:center;flex:none}
+.tx{display:flex;align-items:center;gap:14px;padding:14px 4px;width:100%;text-align:left}
+.tx + .tx{border-top:1px solid var(--hair)}
+.tx .who{flex:1;min-width:0}
+.tx .who b{display:block;font-weight:500;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tx .amt{text-align:right;font-weight:500;font-size:15px}
+.learn{display:flex;gap:12px;overflow-x:auto;scrollbar-width:none;margin:0 -22px;padding:0 22px 4px}
+.lc{flex:none;width:240px;padding:20px;border-radius:24px;position:relative;overflow:hidden}
+.lc .li{width:46px;height:46px;border-radius:14px;background:#fff;display:grid;place-items:center;margin-bottom:28px}
+
+/* tab bar */
+.tabbar{position:absolute;left:16px;right:16px;bottom:20px;height:70px;padding:0 6px;display:flex;align-items:center;background:rgba(255,255,255,.88);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--hair);border-radius:24px;box-shadow:0 20px 40px -16px rgba(18,10,43,.22);z-index:20}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:10.5px;font-weight:500;color:var(--faint)}
+.tab svg{width:22px;height:22px}
+.tab.on{color:var(--ink)}
+.tab.on svg{color:var(--violet)}
+.tab.scanbtn .bubble{width:54px;height:54px;border-radius:17px;display:grid;place-items:center;background:var(--violet);color:#fff;margin-top:-34px;box-shadow:0 14px 26px -8px rgba(91,46,255,.6)}
+
+/* scan */
+.scan{position:absolute;inset:0;background:#0B061D;color:#fff;z-index:30;overflow:hidden}
+.scan .feed{position:absolute;inset:0;background:radial-gradient(70% 45% at 50% 36%,rgba(123,87,255,.32),transparent 70%)}
+.scan .top{position:absolute;top:62px;left:20px;right:20px;display:flex;justify-content:space-between;align-items:center;z-index:2}
+.scan .round{width:46px;height:46px;border-radius:15px;background:rgba(255,255,255,.12);display:grid;place-items:center;backdrop-filter:blur(10px)}
+.scan .round.on{background:var(--lime);color:var(--ink)}
+.scan .frame{position:absolute;left:50%;top:36%;width:236px;height:236px;transform:translate(-50%,-50%);border-radius:36px;transition:all .45s cubic-bezier(.2,1.3,.4,1);
+  box-shadow:0 0 0 2000px rgba(11,6,29,.35),inset 0 0 0 2px rgba(255,255,255,.35)}
+.scan .frame::before{inset:-7px;--sq:#C6FF3D}
+.scan .frame::before{background-size:16px 16px!important}
+.scan .beam{position:absolute;left:22px;right:22px;height:50px;background:linear-gradient(180deg,transparent,rgba(198,255,61,.22));border-bottom:2px solid var(--lime);animation:beam 1.9s ease-in-out infinite alternate}
+@keyframes beam{from{top:10px}to{top:174px}}
+.scan .code{position:absolute;inset:50px;opacity:0;transform:scale(.6);transition:all .4s cubic-bezier(.2,1.3,.4,1)}
+.scan.locked .frame{width:196px;height:196px;box-shadow:0 0 0 2000px rgba(11,6,29,.6),inset 0 0 0 2px var(--lime)}
+.scan.locked .beam{display:none}
+.scan.locked .code{opacity:1;transform:none}
+.scan .found,.scan .hint{position:absolute;top:calc(36% + 140px);left:0;right:0;text-align:center;transition:all .25s}
+.scan .found{opacity:0;transform:translateY(8px)}
+.scan .found span{display:inline-flex;gap:8px;align-items:center;padding:10px 18px;border-radius:99px;background:var(--lime);color:var(--ink);font-weight:500;font-size:14px}
+.scan.locked .found{opacity:1;transform:none}
+.scan.locked .hint{opacity:0}
+.scan .zoom{position:absolute;top:calc(36% + 186px);left:50%;transform:translateX(-50%);display:flex;gap:4px;padding:4px;border-radius:99px;background:rgba(255,255,255,.1);backdrop-filter:blur(10px)}
+.scan .zoom button{width:42px;height:32px;border-radius:99px;font-size:12.5px;color:rgba(255,255,255,.8)}
+.scan .zoom button.on{background:#fff;color:var(--ink)}
+.scan .tray{position:absolute;left:0;right:0;bottom:0;background:#fff;color:var(--ink);border-radius:30px 30px 0 0;padding:14px 20px 30px;z-index:2}
+.scan .tray .grab{width:40px;height:5px;border-radius:5px;background:var(--hair);margin:0 auto 16px}
+.demo{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none}
+.demo button{flex:none;display:flex;gap:12px;align-items:center;padding:11px 14px;border-radius:16px;background:var(--canvas);text-align:left}
+.applogo{display:grid;place-items:center;color:#fff;font-weight:600;flex:none}
+
+/* ScoreMeter */
+.meter{position:relative;width:236px;height:236px;margin:6px auto 0}
+.meter svg{position:absolute;inset:0;width:236px;height:236px;overflow:visible}
+.meter .box{position:absolute;inset:44px;border-radius:50%;background:#fff;box-shadow:0 0 0 8px var(--canvas),0 18px 34px -14px rgba(18,10,43,.22);display:flex;flex-direction:column;align-items:center;justify-content:center}
+.meter .reading{font-weight:600;font-size:54px;line-height:1;letter-spacing:-.04em;margin-top:2px}
+.meter .reading small{font-size:20px;font-weight:500;margin-left:2px}
+.meter .delta{margin-top:7px;font-size:11.5px;font-weight:500;opacity:0;transition:opacity .3s}
+.meter.done .delta{opacity:1}
+.legends{display:flex;justify-content:space-between;width:212px;margin:0 auto;font-size:11.5px;color:var(--faint)}
+.verdict{display:flex;gap:12px;padding:16px;margin-top:20px;border-radius:18px;align-items:flex-start}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.fact{display:flex;gap:11px;align-items:center;padding:14px;border-radius:16px;background:var(--canvas)}
+.fact .fi{width:36px;height:36px;border-radius:11px;background:#fff;color:var(--violet);display:grid;place-items:center;flex:none}
+.group{margin-top:22px}
+.group h4{margin:0 0 10px 2px}
+.factor{display:flex;gap:14px;padding:15px 16px;align-items:flex-start;opacity:0;transform:translateY(8px);transition:all .4s cubic-bezier(.2,.9,.2,1)}
+.factor.in{opacity:1;transform:none}
+.factor + .factor{border-top:1px solid var(--hair)}
+.factor .fic{width:42px;height:42px;border-radius:13px;display:grid;place-items:center;flex:none}
+.factor .fb{flex:1;min-width:0}
+.factor .fb p{font-size:12.5px;line-height:1.45;color:var(--muted);margin-top:3px}
+.impact{display:flex;gap:3px;margin-top:8px;align-items:center;font-size:10.5px;color:var(--faint);letter-spacing:.08em;text-transform:uppercase}
+.impact i{width:14px;height:4px;border-radius:1px;background:var(--hair)}
+.factor .pts{font-weight:600;font-size:15px;flex:none}
+.note{display:flex;gap:12px;padding:14px 16px;font-size:14px;line-height:1.45;align-items:flex-start;color:var(--ink-2)}
+.note + .note{border-top:1px solid var(--hair)}
+
+/* overlays */
+.scrim{position:absolute;inset:0;background:rgba(10,6,24,.36);z-index:40;opacity:0;transition:opacity .25s;backdrop-filter:blur(3px)}
+.scrim.on{opacity:1}
+.sheet{position:absolute;left:0;right:0;bottom:0;max-height:93%;background:#fff;border-radius:32px 32px 0 0;z-index:41;transform:translateY(100%);transition:transform .45s cubic-bezier(.2,1,.3,1);display:flex;flex-direction:column}
+.sheet.on{transform:none}
+.sheet .grab{width:40px;height:5px;border-radius:5px;background:var(--hair);margin:10px auto 0;flex:none}
+.sheet .body{overflow-y:auto;padding:18px 22px;scrollbar-width:none}
+.sheet .actions{padding:14px 22px 30px;border-top:1px solid var(--hair);display:grid;gap:12px;flex:none}
+.sheet .actions .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.toast{position:absolute;left:22px;right:22px;bottom:108px;padding:15px 18px;border-radius:18px;background:var(--ink);color:#fff;font-size:14px;display:flex;gap:10px;align-items:center;z-index:80;transform:translateY(20px);opacity:0;transition:all .3s;pointer-events:none;box-shadow:0 20px 40px -14px rgba(18,10,43,.55)}
+.toast svg{color:var(--lime)}
+.toast.on{transform:none;opacity:1}
+.dialog{position:absolute;left:24px;right:24px;top:50%;transform:translateY(-46%) scale(.96);opacity:0;background:#fff;border-radius:28px;padding:26px;z-index:82;transition:all .25s cubic-bezier(.2,1.2,.4,1);pointer-events:none;box-shadow:0 40px 80px -24px rgba(18,10,43,.4)}
+.dialog.on{opacity:1;transform:translateY(-50%) scale(1);pointer-events:auto}
+.handoff{position:absolute;inset:0;z-index:50;display:grid;place-items:center;text-align:center;padding:30px;color:#fff}
+.handoff .logo{width:90px;height:90px;border-radius:28px;display:grid;place-items:center;font-weight:600;font-size:38px;margin:0 auto 22px;background:#fff;box-shadow:0 24px 44px -14px rgba(0,0,0,.4)}
+.dots{display:flex;gap:7px;justify-content:center;margin:18px 0}
+.dots i{width:8px;height:8px;border-radius:2px;background:#fff;animation:dot 1s infinite}
+.dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}
+@keyframes dot{50%{opacity:.3;transform:translateY(-4px)}}
+.amount{font-weight:600;font-size:64px;line-height:1;letter-spacing:-.04em;text-align:center;margin:20px 0 10px}
+.keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin:18px 0 16px}
+.keypad button{height:60px;border-radius:18px;font-weight:400;font-size:26px;transition:background .1s}
+.keypad button:active{background:var(--violet-soft)}
+.approw{display:flex;align-items:center;gap:14px;padding:15px 16px;width:100%;text-align:left}
+.approw + .approw{border-top:1px solid var(--hair)}
+.bigring{width:200px;height:200px;margin:34px auto 24px;position:relative}
+.bigring svg{width:200px;height:200px;transform:rotate(-90deg)}
+.bigring b{position:absolute;inset:0;display:grid;place-items:center;font-weight:600;font-size:46px;letter-spacing:-.03em}
+.toggle{width:52px;height:32px;border-radius:32px;background:var(--hair);position:relative;flex:none;transition:background .2s}
+.toggle::after{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(18,10,43,.2);transition:transform .22s cubic-bezier(.2,1.3,.4,1)}
+.toggle.on{background:var(--violet)}
+.toggle.on::after{transform:translateX(20px)}
+.setting{display:flex;align-items:center;gap:14px;padding:15px 16px;width:100%;text-align:left}
+.setting + .setting{border-top:1px solid var(--hair)}
+.setting .si{width:40px;height:40px;border-radius:12px;background:var(--violet-soft);color:var(--violet);display:grid;place-items:center;flex:none}
+.setting > div{flex:1}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+.chips button{padding:10px 15px;border-radius:13px;background:var(--canvas);font-size:13.5px;font-weight:500;display:inline-flex;gap:7px;align-items:center}
+.chips button.on{background:var(--ink);color:#fff}
+.bars{display:flex;align-items:flex-end;gap:12px;height:130px;margin-top:20px}
+.bars div{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;height:100%;justify-content:flex-end}
+.bars i{width:100%;border-radius:8px;background:var(--violet-soft);transition:height .8s cubic-bezier(.2,.9,.2,1)}
+.bars div.today i{background:var(--violet)}
+.qrbox{width:236px;height:236px;margin:20px auto;padding:18px;background:#fff;border-radius:28px;box-shadow:0 24px 44px -20px rgba(18,10,43,.25);position:relative}
+.qrbox .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:50px;height:50px;background:#fff;border-radius:12px;padding:3px}
+.timeline{position:relative;padding-left:28px}
+.timeline::before{content:"";position:absolute;left:9px;top:10px;bottom:10px;width:2px;background:var(--hair)}
+.tl{position:relative;padding:9px 0}
+.tl::before{content:"";position:absolute;left:-23px;top:13px;width:12px;height:12px;border-radius:3px;background:var(--good);box-shadow:0 0 0 4px var(--good-bg)}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:14px 16px;font-size:14px}
+.kv + .kv{border-top:1px solid var(--hair)}
+.kv span{color:var(--muted)}
+.burst{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:60}
+.burst i{position:absolute;left:50%;top:30%;width:9px;height:9px;border-radius:2px;animation:burst 1.2s cubic-bezier(.1,.7,.3,1) forwards}
+@keyframes burst{to{transform:translate(var(--x),var(--y)) rotate(300deg);opacity:0}}
+.okmark{width:116px;height:116px;margin:0 auto;border-radius:36px;background:linear-gradient(150deg,#14B86C,#0A9D5A);display:grid;place-items:center;color:#fff;box-shadow:0 30px 50px -18px rgba(10,157,90,.6);animation:pop .55s cubic-bezier(.2,1.6,.4,1)}
+.okmark svg{width:56px;height:56px;stroke-width:2.4;stroke-dasharray:30;stroke-dashoffset:30;animation:draw .5s .3s forwards}
+@keyframes pop{from{transform:scale(.3) rotate(-20deg);opacity:0}}
+@keyframes draw{to{stroke-dashoffset:0}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></symbol>
+  <symbol id="i-sos" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 7v6M12 17h.01"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
+  <symbol id="i-trend" viewBox="0 0 24 24"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></symbol>
+  <symbol id="i-store" viewBox="0 0 24 24"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></symbol>
+  <symbol id="i-badge" viewBox="0 0 24 24"><path d="M12 2l2.4 2.2 3.2-.4.9 3.1 2.8 1.6-1.2 3 1.2 3-2.8 1.6-.9 3.1-3.2-.4L12 22l-2.4-2.2-3.2.4-.9-3.1L2.7 15.5l1.2-3-1.2-3 2.8-1.6.9-3.1 3.2.4z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></symbol>
+  <symbol id="i-rupee" viewBox="0 0 24 24"><path d="M6 3h12M6 8h12M6 13l8.5 8M6 13h3c6.67 0 6.67-10 0-10"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-qmark" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+  <symbol id="i-checkc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></symbol>
+  <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M7 17L17 7M7 7h10v10"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M17 7L7 17M17 17H7V7"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></symbol>
+  <symbol id="i-qr" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM18 18h3v3h-3zM14 20h2M20 14v2"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></symbol>
+  <symbol id="i-mobile" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></symbol>
+  <symbol id="i-bank" viewBox="0 0 24 24"><path d="M3 21h18M5 21V10M19 21V10M9 21V10M15 21V10M2 10l10-7 10 7"/></symbol>
+  <symbol id="i-brief" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></symbol>
+  <symbol id="i-hour" viewBox="0 0 24 24"><path d="M5 22h14M5 2h14M17 22v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2"/></symbol>
+  <symbol id="i-face" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M9 9v1M15 9v1M12 9v4h-1M9 16s1 1.5 3 1.5 3-1.5 3-1.5"/></symbol>
+  <symbol id="i-finger" viewBox="0 0 24 24"><path d="M12 11v3a6 6 0 0 1-1.5 4M8.5 8.5a5 5 0 0 1 8.5 3.5v2c0 2.5-.6 4.3-1.5 6M6 12a6 6 0 0 1 1-3.3M18.8 7.5A9 9 0 0 0 3.6 8.3M3 13v-1M14.5 16.5c-.3 1.6-.9 3-1.5 4M9 21c.6-1 1.1-2.2 1.4-3.4"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7.5 12h.01M12 12h.01M16.5 12h.01"/></symbol>
+  <symbol id="i-pattern" viewBox="0 0 24 24"><circle cx="5" cy="5" r="1.6"/><circle cx="12" cy="5" r="1.6"/><circle cx="19" cy="5" r="1.6"/><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/><circle cx="5" cy="19" r="1.6"/><circle cx="12" cy="19" r="1.6"/><circle cx="19" cy="19" r="1.6"/><path d="M5 5l7 7 7-7M12 12v7"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+  <symbol id="i-torch" viewBox="0 0 24 24"><path d="M8 2h8l-1 6H9z"/><path d="M9 8l1 14h4l1-14"/><path d="M12 12v3"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="14" height="11" rx="2"/><rect x="17" y="8" width="5" height="12" rx="1.5"/><path d="M6 19h6"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+</svg>
+
+<div class="stage">
+  <div class="phone"><div class="notch"></div><div class="app" id="app"></div></div>
+  <aside class="guide">
+    <img src="data:image/png;base64,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" alt="trace.pay">
+    <h1>Pay anyone.<br>Know them first.</h1>
+    <p>A clickable prototype of the Trace.Pay app. Jump to a flow, or start from the welcome screen and use it normally.</p>
+    <ol>
+      <li><button data-jump="welcome"><b>1</b><div>Welcome & create account<span>Mobile or email, selfie, device lock</span></div></button></li>
+      <li><button data-jump="locked"><b>2</b><div>Unlock with device lock<span>Face ID, fingerprint, PIN or pattern</span></div></button></li>
+      <li><button data-jump="home"><b>3</b><div>Home<span>Balance, actions, safety summary</span></div></button></li>
+      <li><button data-jump="scan"><b>4</b><div>Scan any UPI QR<span>Lock-on, torch, zoom, photos</span></div></button></li>
+      <li><button data-jump="risky"><b>5</b><div>Risk report<span>ScoreMeter at 92% · Poor</span></div></button></li>
+      <li><button data-jump="external"><b>6</b><div>Pay a shop's PhonePe QR<span>Check, hand off, confirm</span></div></button></li>
+      <li><button data-jump="paymember"><b>7</b><div>Pay a member<span>Keypad, cooling-off, device lock</span></div></button></li>
+      <li><button data-jump="check"><b>8</b><div>Check any UPI ID<span>Truecaller-style lookup</span></div></button></li>
+      <li><button data-jump="txn"><b>9</b><div>Payment details<span>Timeline, receipt</span></div></button></li>
+    </ol>
+  </aside>
+</div>
+
+<script>
+const MARK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMwAAADMCAYAAAA/IkzyAAAEa0lEQVR42u3dP2gedRjA8ef38posXVpQszWgBaGYCJZ0sUMRA7oXLMHgKoVgwaWTLtLBSKasDkLo0FHo0KWDUBAslGiLIJKAQZLFCkFo3j89h9B2sA7J+7y+7733+UCHUvJw791937uD3K9l7UpVRYK5CxHvflhKRMTSXM5MmmVj8/D82d2uqhtf5c+/un44fxDtzA0SCpN+/rSyBt2+4YCT49qlBgQDTSAYEAwIBgQDggHBAIIBwYBgQDAgGBAMIBg4gvbched/8Sv6jIvdneP/7OLl//iH9cG369kbaF7+YpI8fXvTLRmM+hnG1YVJM6xzuiUWROOWDIZ3SwYIBtJvywQDggHBgGCgTs8xggHBgGBAMCAYmNAHf8GAYEAwIBiok3bTPvDKasSpV3JnnnmrlF/v57+s9MWyE1QwY+D1+fGf2es6Od2SgWBAMIBgQDAgGBAMCAYEAwgGBAOCAcGAYEAwgGBAMCAYEAzUXOPe6T+/WEr2zF63qkrJn+t/uHaFGbkfblfp2i+Vkj2z2xGLYEAwIBhAMCAYEAwIBgQDggEEA4IBwYBgQDAgGEAwIBgQDAgGai5tEYylz/I37o1zEb/8mDtzGItg9Pv5i2AcPK6q7H06czri0V7EwePcuXdvRWw9FMyRfLB8uBBE5saVkj8zliPqsJ1P+hHvf1SPk+juLbdkgGBAMCAYEAwIBgQDCAYEA4IBwYBgQDCAYEAwIBgQDAgGBAO8QDtzWK+bv4HDmPmkn72NVZU9s5T8z15aEVFFJK+S0Chlaa5Zu29lNWLhveyTO38RjF434uNzTtBMG5uDr+zjlgwEA4IBwYBgQDCAYEAwIBgQDAgGBAMIBgQDggHBgGBAMIBg4AjaTfvAp17Nn9np5K+LUIbwVZa9lkFExMzpiKofsbeTO7ffi7h3RzAjt/8of+bUVP4iGDGkpUlWVutxnNY+dUs2FrqdemynpZAEA4IBwQCCAcGAYEAwIBgQDCAYEAwIBgQDggHBAIIBwYBgYDy17YIx/SZrRZyZz5159nz+du7Hg6F8/hOzERFnBTNq331z+CfT/e+H8AZ+ifj823rs05/jk/SZB/0vXWHGwdbD/Jl/bEXMv5M8tOGLYOz97hkGPPSDYADB0Fwbm6UIBlxhQDAgGBAMeOAXDAgGBAOCgdo/vwgGBANDDCb7kgWTejv27AojGsTilgzStXe3n7+Pfu3SYMM6B3Yog+v89XK0Yjqmpo/389dvRnwd/15nYWZ28KtOWbuSs4DD7k7EzlYzD/DbF/NnvvZmxG8/5c/c3Y74ez9v5onZB3HQ/zP1HfxWTMfJ3kL6Pr26PngwlllKcO9Oc2cOYymkqemIkwvjeaw9w4BgQDAgGBAMCAYQDAgGBAOCAcGAYADBwCiCWbxsZ5Lj+s3x3bbUX+9/+lro0lxVOewc9/x50ctfE31LZo0AJvWcaf8fO8AVh0n5Ym2PYscISCB11R6XHScicQAAAAAAAAAAAAAAAAAAUAf/AIjeqMU5ac3AAAAAAElFTkSuQmCC', LOCKUP = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAABACAYAAAAkn/rnAAASKElEQVR42u2dd1xUxxbHf/fFxDx7WECkLOwCgiJdJHaBoIIooiKKYsHYEp8gMXaJGokQ7C2aRKygiQUVURCJJUZDFLEgvXdRMBZ8sc77g48bdufezcJbCMb5/nX33Lln5s69Z+bMmZm73LpPCQGA58+AG0lo1phbA23a0fI5WzgODMZbSIvnz96sAtctbwdN9gAZbzfcOKvaHvhNJfIm630Zby//YlXAYDADZjAYzIDrz5s+BGAwWA/MYLyltGjohW5+/HItXeBuGS2P2wewvpLBaCYGbGoN9HCl5RzHcYTQphq3j1U2g8FcaAaDwQxYiGtJuWTFoi3E0tiVxMckMaef8c90of9pHNgdT3Z8twceg0bLZC+ev2AVw2A98JvA4YPHcDs1g1UE4+3ogXUMgaIs/nN8co5jUWgGo9kYcEUhfxQaAMSdaRkzXgaDjYHVTnxMEnnx/AVWf72JOnfr5m3EHvlFrunR1BLBsa+5bAOF4vl27duir4sVV170mKTeSkNGejayMnPAcRxEIg2YdzHFAOc+6KjfmgOAG1fyybXkG6isvIeqe1V4+PAxtDtqQl9fF3p6ujCSimFhY9CgDRspSbkkP68QeXkFKMgvQqtW/4ZEagSxWB/drLrA0ERDJb3Xf8sjmRnZSEvLROWduzAyEsPYRAKJ1BD2PU3Vvpnk1LHL5NXLV7Lf77V8F65DenBXL2WRlGu3kJmRjWfPnkEiNYTU2AhGRmJYO0hULsfxQxdIUUEx7t6rQtW9arRo0QL6BrrQ19eDnn4n9HWx4tV1+fxtUl31u5zMpLMUZt06/WXe5xOuk8ePauRkXbuZQ9JZxDEDbqgXUVxD7Cz7CZ7fuH47Jevxob3sOOnnDOI1dJzceSOJGIknr5KBTl6oqqrm1es30QeJp5LJ8uBQuLmO+styzpy8lAR9PgumXTtyqtzTpvXbsXNHJIbUCcjxsXLJVjJ5yjjoSdrz6t2/O44ELwqB+0BvQR2men3JV2HB8B7vqhZDLs79nTjau1DyBYHhZJj7WMHrLI1dyVdfB2PoyL6C5Zj18TJy5FAMZnw8R2kZLI1dyeLguRgzcZCcrq2bdyAx4bxcWrchrn95TyV5D0gPO2dKvn3H+v+7vlgQS80U5BfBz3e6oPECgO94b7x8+QI52Xkq6TwWfRL9e7lj/+44pQORmMM/E9cBw7FzR6RKerdu3oHBH9ENSGFONfH3nU8+C1iMmponSnXU1DxBwKwF8PUKIFm3KxptoLRn1wGl56uqqjF9SiBmTl5KSvIeEKFnowpVVdUIClgEDxd/UlFcI9M1eowX7S3EJqAgu0rpfZ9JOEfJWrdupbSxYQbcTBk6bDCsHSTcQA/Hej+8zwIWI/VaIe/LErbiezJ9SqDShoMPdw/5HqQgu4p4DPJB3Mkz9dJz7uxFTBo/82+v32PRJ7F44Ze85/o79a6XrmvJNxAasu7PZzeyLycSadAN57E4pXqORsdSsrHjR6nlfmUutIk1sHwvvTm+MJMQQzNavsaMEI7j30wvJFekvICQTkZ02lN7CdkX3vgPW8egNdfPwZu8ePGCt3UWiTTQtl0beRfZSFyvPHr3ccTzFy/w26/JAIAZn/pj+54QAMAApz44d/YiAMDG1hJa2pp45513UFpShls303j1Re07RMmu/JJJPIf4CpbBSFI7Zi0pLkNmRrZcLzBr9jSEbZgnk4WsWC3YCFhadYWurg5KSsp4p9wK8ouwfOFm8sWqWY32kQU7e2s8ffoUBflFgt5BQvxZnE+4Tvq72nDyz+JDrFu9FQBgINaDWKwPDY0PUF19Hxnp2bz3/eOBaORn3iMSM00OAPwmjcH6NVvl0uzb84NgeTNTy4lTHw9KPszTDSvCAtQbxOJbw1yUVT+50Fpo3vFaIb+Oplw3feHKQQ4AvD0+Ib9clP8oWGj4MgwZ0VvuJbiUEq2S3g97OmDD5lAYGHfgACAv4y5JSbkJW0djmb5pMyfBZ+wIeI7uz5WdTZa7PjWliCxZuFJm+K85+MNRKq9F81cI9vbBy+dBT9Keu5Typ3x92B7y9aoNCPp8lqx8AHDs4Hkyc2oQpWfQYGcsCp4rNwZPu15CVi4PlzVAsnHdNztx6dxt0muAhVqN2GfsCCxYHCgL/gFA8uVsErJiDX69fIX2SL6ix5e9Blhw2zb8QHr1doRVdyMu6ab8+V3bjxG+ujxTZ9w7YqQHZcDFRaU4G3+NOA2yo+6Zz5Ox6GaO7r06q6V+mAvdCBhJxDhyahtX1zik5lrcyLEucg9twEBbznN0f94H2c1WzG3YHIrWrVtRY87M1HJZo7d944+ErzecHTgd2/eEcHwBqsD5E7ik5ETMDPSRO7dkwUpKT3cHW+w8EM4pBtC62uhzUdEbOBNTKXVNfFyi2ut03TeLubrGCwD2PU25I6e2cUOGDqTSX0+5haSfM6jOYUaAD2fV3Yi3zidN9+RmBUyj5Gm3/6xfk64dOddBTlSaQz8e43efj9Dus7fPcLXVCzPgRmDhkqB6X5ObXkku/nSLHN6fSLasiSLLFmwiR4/EQkP0AZU2L7dAdpyk0EMDgI6ONhYsm6a0ha/buADAtV9zCJ8LuTh4rtJyf/qfjylZelpWk9Z3QBD/2LukpFTpddd/yyPxMUlk97fHSeiyb8nKpd+QR48e025wnWEHAPjwBLOiD59Aab588Cz5cjZRvBYA3Nxd1XbvbC10I9DD0U7ltPExSeT77bvRt6ebytc8fPBQdnw7NZ06PytgGvxnnqpfA5KTzyu/cf0Wvt10UHBIlMNzXUryjSat7262Ys7DxZ9cU8i3tKScSluUe59E7T2IHd/tVTo9VhfFhs3dqzdnZ+5GKioq5eQnYuLlYzmxCbTxDnGlGs+/xYDfYabPi0ikAUVXj/fFT7tDZk4LwmS/T+qdx5Mn/5UbfynS2cyk3jqFprSWLQ2tt66amicoyXtA9KXtm+yLoQZiPSgacEmxfN1sXh1JPrT/qN66q6vuU7LxE3yoxT+Rew/K/T5yKIa6bsTIodgRGQq1G3DuTcDPhk4gtIb5P+GAnlT1jCbaAa9eqab7TUYxai3EzGlBDd488fTpUwDC0Wc9fd1668zKzFFrPTSl8QJAp046dG9bVCI7/mFPPJkze1GDdPNFu4ePGEIZcE52Hi7+dIv0cbbkzidcJ2O9p1CNu2JQVG0GLGRI6jKwV69oXW/r+ujpExaTmOP8c4eug5xgaiqFSFOEhw8eIvbEacHe8eXLV/yBjX/V/x15rsatkyKRBsp+b9o6/eOPP+h64GpDPFcvZQmu4jIQ68HJuS+0tDXxfsuWyMsrwP7Iw3+Zn9Rci/P3nU8Uo8yHDx4HAMQquNMAMGq0J26tSkCjGDCj6eAz3gFOfRASFkytjV0QGE6EDFhsqM8r5xv7/RXGphL8lHhBTmZmbgqvkR71d2cN9OA1JqFJ67S0lL5nqbERgNp5YT42fxOOEWOduaSbx2Wy/KwqoooBA7VTW4oG/MP+IyjMqSYf9fek0nt6ueOLVWAG3GSt+tM/1K7z58SbxGfkZKrHiorewEVFb6DSP6gTsFJE17AtZ2nsSkWPs7Lq7w5LJIY8PfxLzP58/BvxzxcZ6XTkWyKtvaeUlFvUueDl8zBirDN1bzWPH6uc56Chjpyj1TCiGIeYP/cLyu22sbWETQ+p2uuSTSMpoepetdp18vWODkqi1nWnjF5T90shXSzMqPMb126rd7mMJPQKs5zsPFw4c0OtA52Mq4TcKVTv4OlQ5BnCF8x7vWqusIBeZefQg7/OiwpL6pW373g6kn3h3CVe97kxaHAPrNGxdiUVH3xyvoCV0H5iU2sgW2Am4rdG8sxEmiK6t7xwWe358M0zXkm6xpv20rnbZNTwCXT91pm+sLW1xEWFclZUVGJh0Bqyau1ngi1+7JFfyJ07lfCf6cUBgIkJf0QycNYC5KZXEuMu2oK61q3aTYaP9FC6NW7nSkLO/Ah86V/7e0MQIb5zAC2D/++/rVJTisiUibMEhwUAfxT5xvVU3mv4lqoCEIyqe3q58676onrrwc7Ny4Cr7wAmVvzndGhvTDBgNXs1LStI5//u9KbPG6+3NTIyoGSJCeexbtVuMmy4G97/9/vIzcnH/shDGDjIGV5jnBr04hlJ6HyqqqqxbtVu4jXKA0amtUYQH5NE5sxeyKujuM70yKQp4xC17xA1V7k7Igr9HLzJnM8+gWlnKbrZGXK56ZUkJycfUfsOYqr/7FqPIP8B0ZO05/Sl7bl1obtJeOhGqjHo29MNq0MiiLNLP9h9aMJVFNeQkuJSZKRnY234ZoSHbcT9+8JRq4ObCDn6nUJDfAZ4t6Xq9ebnHUSmzZgEE1Mpah7XoKSkDL9euoKBTl7871XgdFldmpmbUlNMuyKiZBFjACgteEg2rd8uuOupvLyC/3mairipfgtJbMxpwbIPG+4uuGWTjYHVhElnY155eNhGhIfJv9S2dtYNz0egp3udTy9bL3K38p7S+eHsrFzZcSdxGy76wFny6Yy5vC7wa7luB3vCt1hkf9SfAZs5CyZy/Ry8eYNma8O3YG34Fuh2sOfdQ/39t3sEe+qLsfz38Uus6vWWmHCe2osrGEQT68mtROtm2YUy4JzsPIweMQmmen2JhugDONg4KdVZqMS1HurpBmUG7DXSA9t2fdko7y0bA78eo/i68K7rVTcSM03u4+kTBM8r22VTN01kRKzMp/Ea48QNG+7eoPJs37pT7ndI6NIG39uO7/byyh8Ld84oyVb/ZOLKVUvkfvtP9aPWlMuCVjVPeBfD0A3YZuEedlQ/Tki/SKSBQUMdGy0QyAy4DitCFjVNPmEBnI2tpUpp7eytYWnVlZIrrpDatutLLnztCsEXVVnwKj/rzw3pfV2suJ8uHEe/Ab3qfV86nTryywV2YL7fCtA3Vd//O3d3sEXcmcNwHdJDTmdnCx0udPUylfWMnzCat9HctDpSsLER+jKHuvb9MgNWgQEDbbmEc0fRu4+j0nTt2rUFALz7Lj0CadlStYHdybO7uK++DgbfBvHX47aFS4JwIjGCCw1fRkWJ5y0MpK4Z5z+EO3P+GMaOG8UbVa5Ln349sXFLGBIuRnKKwSdzKz3uwNFN3JoNIbCzt1baKOjoaCPws09wJeUnwSknj8kCruU01Z+NRTdzwXM2tpYICV2K4wnfC+40GjnWhTt9NlrQ0Fq3boXB7h/h+Mn9+HrjfG7qjInU8xjqOViwDLZ2VgLjX7dGfWe5hv4953iBgJJ1H+DpfxUG2i2A1CQ6kGXeHeCr7WeSzSjjWVtfkmyBuHB6rBJ5k1O7i1JW+IgUFhShtLQC77ZogdatW6F9h3Zw6G2m9rzyMu6S0tJy3LlzF7q6OhDaS3vudAp59OgxJFJDdLMVq/xBusLCYpk7JxJpoIu1Xr3vITe9khTkF+H+7w+gra2Jjh21YGapq7Ke3xIIiYsEyvIBbT2gvyfg4kM/N6FvYpX9nsxlppaT8rIKVFVVo127tjCSGKr0nTA+blzJJyXFZXhFXsHM3BSdLXToj1nkVJOrV1KgpaUJc3NTaOu3Eswr8eRV4uc7nfKeTiRGNOo8eoODWEJfzHDz49/Qr29Kp60o5I9Yn0sHWnb5kQ7KRCxvst5Y17Btky1gkJprqZTXgIG29S6TuhYPKJtGUoUergrGGlV/Hap8/VFVVPmKpapf7QSAtLRMSubtMxwnEiPQLA2YwWAA2Wl3yIljcVi1ci11bmAjzf3+owy4MdxnBkPpOxcRS3ZFRKGivBL9e/FH/6fOmIhO4jYcM2AGo5lRWFiidCuogVgPy0NnN0nHwqLQDIYasbO3xp7IbU2WXwvzOouKMtTwJZSNcwlRXPLYpj1Q85COQptYATk3aR0fWFvwBqzaPLVH3fJKLQB3X0LGLWBuNOPvxUCsB9/x3giY58edsIxoOgNu06724Pkz9ShMOq2GtKf5l7WZWwOvywsAlcXsxfmn0bLle+juYItXdT7f8t577+HIqeRmU0ap1AjOLv3QUUcbOp200cPRHv1dbbikecebvCxsDMxoViiba20uKP5n0t8JGwMzGG8wMgPuoNn8Cyu1YA+MwRB0oevOqTZ0iaW6qVsmd1/2N+EMBoPBYDAYDAaDwWAwGAwGg8FgMBgMBoPBYDAYDAaDwWAwGAwGg8FgMBgMBoPBYDAYDAaDwXgz+B+PnNDAiiLoawAAAABJRU5ErkJggg==';
+const $ = (s, r = document) => r.querySelector(s);
+const ic = (n, style = '') => `<svg class="i" style="${style}"><use href="#i-${n}"/></svg>`;
+const mark = (s = 40, cls = '') => `<img class="brandmark ${cls}" src="${MARK}" width="${s}" height="${s}" alt="trace.pay">`;
+const fmt = n => '₹' + Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
+const TYPE = s => s >= 50 ? 'poor' : s >= 25 ? 'average' : 'excellent';
+const TC = {excellent: 'var(--good)', average: 'var(--warn)', poor: 'var(--bad)'};
+const TBG = {excellent: 'var(--good-bg)', average: 'var(--warn-bg)', poor: 'var(--bad-bg)'};
+const TL = {excellent: 'Excellent', average: 'Average', poor: 'Poor'};
+const VERDICT = {excellent: 'Safe to pay', average: 'Be careful', poor: 'High risk'};
+const DEVICE = {name: 'Face ID', icon: 'face'}; // the prototype assumes an iPhone; Android shows fingerprint, PIN or pattern
+
+const state = {balance: 12450, cooling: true, voice: false, lock: true, limit: 50000, signup: 'mobile', activity: [
+  {id: 1, who: 'Meera Iyer', vpa: 'meera.iyer@tracepay', via: 'Trace.Pay', amt: 850, in: false, when: 'Today, 10:42 am', type: 'excellent'},
+  {id: 2, who: 'Chai Corner', vpa: 'chai.corner@ybl', via: 'PhonePe', amt: 120, in: false, when: 'Yesterday, 6:15 pm', type: 'excellent'},
+  {id: 3, who: 'Rohan Shah', vpa: 'rohan.shah@tracepay', via: 'Trace.Pay', amt: 2000, in: true, when: 'Yesterday, 1:03 pm'},
+  {id: 4, who: 'Hyderabad Metro', vpa: 'hmrl@icici', via: 'Google Pay', amt: 60, in: false, when: 'Mon, 9:12 am', type: 'excellent'},
+]};
+const ACCOUNTS = {
+  'quickearn.collect@ybl': {name: 'QuickEarn Rewards', member: false, score: 92, old: 76, reports: 2, records: 31, conf: 88,
+    advice: 'Strong scam pattern. Do not pay unless you know this person well.',
+    shield: ['You have never paid this account before.', 'This is 6× your usual payment.', '14 people paid it for the first time today.'],
+    factors: [
+      {icon: 'swap', label: 'Forwards nearly everything it receives', detail: '96% of ₹1,84,000 received today was sent on within 2 hours', pts: 25},
+      {icon: 'users', label: 'Many different people pay it', detail: '14 different senders in the last 24 hours', pts: 18},
+      {icon: 'flag', label: 'Reported by Trace.Pay users', detail: '2 reports in 90 days: task scam', pts: 16},
+      {icon: 'qmark', label: 'Almost all payers are first-timers', detail: '13 of 14 payers had never paid it before', pts: 12},
+      {icon: 'trend', label: 'One payer is paying more and more', detail: '₹200 → ₹1,000 → ₹5,000 → ₹20,000 over 3 days', pts: 12},
+      {icon: 'zap', label: 'Large amounts relayed within minutes', detail: '₹20,000 sent on 9 minutes after arriving', pts: 12},
+      {icon: 'rupee', label: 'Scam-typical amounts', detail: '3 payments of ₹4,999, a common "fee" amount', pts: 6}],
+    change: ['With 10 fewer first-time payers, it would leave the Poor range.', 'Up 16 since your last check, after 2 new reports.']},
+  'chai.corner@ybl': {name: 'Chai Corner', member: false, verified: true, score: 3, old: 3, reports: 0, records: 212, conf: 96,
+    advice: 'Nothing suspicious. A verified shop with regular customers.', shield: [],
+    factors: [
+      {icon: 'users', label: 'Many different people pay it', detail: '38 customers in the last 24 hours', pts: 18},
+      {icon: 'store', label: 'Mostly returning customers', detail: '84% of payers have paid here before', pts: -15},
+      {icon: 'badge', label: 'Verified merchant', detail: 'Tea shop in Madhapur, Hyderabad', pts: -20}], change: []},
+  'meera.iyer@tracepay': {name: 'Meera Iyer', member: true, score: 5, old: 5, reports: 0, records: 46, conf: 94,
+    advice: 'Nothing suspicious. You have paid this person before.', shield: [],
+    factors: [{icon: 'swap', label: 'Money goes back and forth with you', detail: 'Normal between friends and family', pts: 5}], change: []},
+  'arjun.k@tracepay': {name: 'Arjun Kumar', member: true, score: 20, old: 20, reports: 0, records: 0, conf: 50, isNew: true,
+    advice: 'Trace.Pay has not seen this account before. Pay only people you know.', shield: ['You have never paid this account before.'],
+    factors: [{icon: 'clock', label: 'No payment history yet', detail: 'This account is new to Trace.Pay', pts: 20}], change: ['After a few normal payments, the score will update.']},
+};
+const QRS = [
+  {label: 'Chai Corner', app: 'PhonePe', color: '#5F259F', vpa: 'chai.corner@ybl', amt: 120},
+  {label: 'QuickEarn Rewards', app: 'Google Pay', color: '#1A73E8', vpa: 'quickearn.collect@ybl', amt: 4999},
+  {label: 'Meera Iyer', app: 'Trace.Pay', color: '#5B2EFF', vpa: 'meera.iyer@tracepay'},
+];
+const UPI_APPS = [{name: 'Google Pay', color: '#1A73E8', installed: true}, {name: 'PhonePe', color: '#5F259F', installed: true},
+  {name: 'Paytm', color: '#00B9F1', installed: false}, {name: 'BHIM', color: '#0B6E4F', installed: false}];
+
+const app = $('#app');
+let tab = 'home';
+function render(html, {tabs = true, full = false, rise = true} = {}) {
+  app.innerHTML = `<div class="screen enter ${full ? 'full' : ''}"><div class="${rise ? 'rise' : ''}">${html}</div></div>${tabs ? tabbar() : ''}<div class="toast" id="toast"></div>`;
+  app.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+}
+function tabbar() {
+  const t = (id, icon, label) => `<button class="tab ${tab === id ? 'on' : ''}" data-go="${id}">${ic(icon)}${label}</button>`;
+  return `<nav class="tabbar">${t('home', 'home', 'Home')}${t('activity', 'list', 'Activity')}
+    <button class="tab scanbtn" data-go="scan" aria-label="Scan"><span class="bubble">${ic('scan')}</span><span style="margin-top:5px">Scan</span></button>
+    ${t('check', 'shield', 'Check')}${t('profile', 'user', 'Profile')}</nav>`;
+}
+function toast(msg, icon = 'checkc') { const t = $('#toast'); if (!t) return; t.innerHTML = ic(icon) + msg; t.classList.add('on'); setTimeout(() => t.classList.remove('on'), 2400); }
+function go(where, arg) { if (['home', 'activity', 'check', 'profile'].includes(where)) tab = where; (SCREENS[where] || SCREENS.home)(arg); }
+function avatar(name, size = 46) { const s = name.split(/[ .@]/).filter(Boolean).slice(0, 2).map(x => x[0].toUpperCase()).join(''); return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size / 2.9)}px">${s}</span>`; }
+function btn(label, {kind = '', id = '', go: g = '', arrow = false, full = true, attrs = ''} = {}) {
+  return `<button class="np ${kind} ${full ? 'full' : ''}" ${id ? `id="${id}"` : ''} ${g ? `data-go="${g}"` : ''} ${attrs}>${label}${arrow ? '<span class="arrow">→</span>' : ''}</button>`;
+}
+const back = (to = 'home', icon = 'back', id = '') => `<button class="iconbtn" ${id ? `id="${id}"` : `data-go="${to}"`} aria-label="Back">${ic(icon)}</button>`;
+/** Simulated system biometric prompt: uses whatever the phone has set up (Face ID, fingerprint, PIN or pattern). */
+function deviceAuth(reason, done) {
+  const p = document.createElement('div'); p.className = 'sysprompt';
+  p.innerHTML = `<div class="box"><div class="fid scanning">${ic(DEVICE.icon)}</div><b class="t1">${DEVICE.name}</b><p class="b2" style="margin-top:4px">${reason}</p><button class="alt">Use device passcode</button></div>`;
+  app.append(p);
+  const finish = () => { const f = p.querySelector('.fid'); f.classList.remove('scanning'); f.classList.add('ok'); f.innerHTML = ic('checkc'); setTimeout(() => { p.remove(); done(); }, 450); };
+  const t = setTimeout(finish, 1300);
+  p.querySelector('.alt').onclick = () => { clearTimeout(t); finish(); };
+}
+function sheet(body, actions = '') {
+  const scrim = document.createElement('div'); scrim.className = 'scrim';
+  const sh = document.createElement('div'); sh.className = 'sheet';
+  sh.innerHTML = `<div class="grab"></div><div class="body">${body}</div>${actions ? `<div class="actions">${actions}</div>` : ''}`;
+  app.append(scrim, sh);
+  requestAnimationFrame(() => { scrim.classList.add('on'); sh.classList.add('on'); });
+  const close = () => new Promise(res => { scrim.classList.remove('on'); sh.classList.remove('on'); setTimeout(() => { scrim.remove(); sh.remove(); res(); }, 450); });
+  scrim.onclick = close;
+  return {el: sh, close};
+}
+function dialog(title, text, buttons) {
+  const d = document.createElement('div'); d.className = 'dialog';
+  const scrim = document.createElement('div'); scrim.className = 'scrim'; scrim.style.zIndex = 81;
+  d.innerHTML = `<h3 class="d3" style="margin-bottom:8px">${title}</h3><p class="b1" style="margin-bottom:22px">${text}</p><div class="stack">${buttons.map((b, i) => `<button class="np full ${b.kind || ''}" data-i="${i}">${b.label}</button>`).join('')}</div>`;
+  app.append(scrim, d);
+  requestAnimationFrame(() => { scrim.classList.add('on'); d.classList.add('on'); });
+  d.querySelectorAll('button').forEach(b => b.onclick = () => { d.classList.remove('on'); scrim.classList.remove('on'); setTimeout(() => { d.remove(); scrim.remove(); buttons[b.dataset.i].run && buttons[b.dataset.i].run(); }, 220); });
+}
+function burst() {
+  const c = document.createElement('div'); c.className = 'burst'; const cols = ['#5B2EFF', '#C6FF3D', '#8F6BFF', '#0A9D5A'];
+  c.innerHTML = Array.from({length: 30}, (_, i) => { const a = Math.random() * Math.PI * 2, r = 100 + Math.random() * 130;
+    return `<i style="background:${cols[i % 4]};--x:${Math.cos(a) * r}px;--y:${Math.sin(a) * r}px;animation-delay:${Math.random() * .1}s"></i>`; }).join('');
+  app.append(c); setTimeout(() => c.remove(), 1500);
+}
+/** Pixel "t" from the logo, used as a large brand texture. */
+function pixelT() {
+  const px = [[3,1],[4,1],[3,2],[4,2],[1,3],[2,3],[3,3],[4,3],[5,3],[6,3],[3,4],[4,4],[3,5],[4,5],[6,5],[7,5],[4,6],[5,6],[6,6],[7,6]];
+  return `<svg class="px" viewBox="0.5 0.5 8 7" aria-hidden="true">${px.map(([x, y]) => `<rect x="${x}" y="${y}" width=".94" height=".94" fill="#fff"/>`).join('')}</svg>`;
+}
+
+// ---------- ScoreMeter ----------
+const R = 96, C = 2 * Math.PI * R, ARC = .75;
+function scoreMeter(a) {
+  const type = TYPE(a.score), color = TC[type], diff = a.score - a.old;
+  const ticks = Array.from({length: 31}, (_, i) => { const ang = (135 + i * 9) * Math.PI / 180, r1 = 116, r2 = i % 5 ? 112 : 108;
+    return `<line x1="${118 + r1 * Math.cos(ang)}" y1="${118 + r1 * Math.sin(ang)}" x2="${118 + r2 * Math.cos(ang)}" y2="${118 + r2 * Math.sin(ang)}" stroke="var(--faint)" stroke-opacity="${i % 5 ? .45 : .9}" stroke-width="${i % 5 ? 1 : 1.6}" stroke-linecap="round"/>`; }).join('');
+  return `<div class="meter">
+      <svg viewBox="0 0 236 236" aria-hidden="true">${ticks}
+        <circle cx="118" cy="118" r="${R}" fill="none" stroke="var(--canvas)" stroke-width="16" stroke-linecap="round" stroke-dasharray="${C * ARC} ${C}" transform="rotate(135 118 118)"/>
+        <circle cx="118" cy="118" r="${R}" fill="none" stroke="${color}" stroke-width="16" stroke-linecap="round" stroke-dasharray="0 ${C}" transform="rotate(135 118 118)" class="arc"/>
+        <g class="dot" style="transform-origin:118px 118px"><rect x="${118 + R - 11}" y="107" width="22" height="22" rx="6" fill="#fff" style="filter:drop-shadow(0 4px 8px rgba(18,10,43,.25))"/><rect x="${118 + R - 5}" y="113" width="10" height="10" rx="2" fill="${color}"/></g>
+      </svg>
+      <div class="box"><span class="cap">Risk score</span><div class="reading num"><span class="count">0</span><small>%</small></div>
+        <span class="pill" style="background:${TBG[type]};color:${color};margin-top:6px">${TL[type]}</span>
+        <span class="delta" style="color:${diff > 0 ? 'var(--bad)' : diff < 0 ? 'var(--good)' : 'var(--faint)'}">${diff ? `${diff > 0 ? '▲' : '▼'} ${Math.abs(diff)} since last check` : 'No change'}</span></div>
+    </div><div class="legends"><span>0</span><span>100</span></div>`;
+}
+function animateMeter(root, a) {
+  const arc = root.querySelector('.arc'), dot = root.querySelector('.dot'), count = root.querySelector('.count'), meter = root.querySelector('.meter');
+  const set = v => { arc.setAttribute('stroke-dasharray', `${C * ARC * v / 100} ${C}`); dot.style.transform = `rotate(${135 + 270 * v / 100}deg)`; count.textContent = Math.round(v); };
+  const from = a.old === a.score ? 0 : a.old, to = a.score, t0 = performance.now(), dur = 1400; set(from);
+  (function tick(t) { const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); set(from + (to - from) * e); if (p < 1) requestAnimationFrame(tick); else meter.classList.add('done'); })(t0);
+}
+function reportHTML(vpa) {
+  const a = ACCOUNTS[vpa], type = TYPE(a.score), color = TC[type];
+  const raises = a.factors.filter(f => f.pts > 0), lowers = a.factors.filter(f => f.pts < 0);
+  const lvl = p => Math.abs(p) >= 15 ? 3 : Math.abs(p) >= 8 ? 2 : 1;
+  const factor = f => { const good = f.pts < 0, c = good ? 'var(--good)' : 'var(--bad)', bg = good ? 'var(--good-bg)' : 'var(--bad-bg)', l = lvl(f.pts);
+    return `<div class="factor"><span class="fic" style="background:${bg};color:${c}">${ic(f.icon)}</span>
+      <div class="fb"><b class="t2">${f.label}</b><p>${f.detail}</p>
+        <span class="impact">${[1, 2, 3].map(i => `<i style="${i <= l ? `background:${c}` : ''}"></i>`).join('')}<span style="margin-left:6px">${['', 'Low', 'Medium', 'High'][l]} impact</span></span></div>
+      <span class="pts num" style="color:${c}">${f.pts > 0 ? '+' : '−'}${Math.abs(f.pts)}</span></div>`; };
+  return `<div style="text-align:center">${avatar(a.name, 54)}<h3 class="d3" style="margin-top:12px;display:flex;gap:6px;justify-content:center;align-items:center">${a.name}${a.verified ? `<span style="color:#1D9BF0">${ic('badge', 'width:20px;height:20px')}</span>` : ''}</h3>
+      <p class="b2">${vpa}</p></div>
+    ${scoreMeter(a)}
+    <div class="verdict" style="background:${TBG[type]}">
+      <span style="color:${color}">${ic(type === 'excellent' ? 'shield' : 'alert')}</span>
+      <div style="flex:1"><b class="t1" style="color:${color}">${VERDICT[type]}</b><p class="b1" style="margin-top:3px;color:var(--ink-2)">${a.advice}</p></div>
+      <button class="iconbtn" style="width:38px;height:38px;border:0" aria-label="Read aloud" onclick="speak('${VERDICT[type]}. Risk ${a.score} percent.')">${ic('volume', 'width:18px;height:18px')}</button></div>
+    <div class="facts">
+      <div class="fact"><span class="fi">${ic('flag', 'width:18px;height:18px')}</span><div><b class="t1 num">${a.reports}</b><span class="b2" style="display:block">Reports</span></div></div>
+      <div class="fact"><span class="fi">${ic('doc', 'width:18px;height:18px')}</span><div><b class="t1 num">${a.records}</b><span class="b2" style="display:block">Payments seen</span></div></div>
+      <div class="fact"><span class="fi">${ic(a.member ? 'user' : 'globe', 'width:18px;height:18px')}</span><div><b class="t1">${a.member ? 'Member' : 'External'}</b><span class="b2" style="display:block">Account</span></div></div>
+      <div class="fact"><span class="fi">${ic('gauge', 'width:18px;height:18px')}</span><div><b class="t1 num">${a.conf}%</b><span class="b2" style="display:block">Confidence</span></div></div></div>
+    ${a.shield.length ? `<div class="group"><h4 class="cap">For this payment</h4><div class="card">${a.shield.map(s => `<div class="note"><span style="color:var(--warn)">${ic('alert', 'width:20px;height:20px')}</span>${s}</div>`).join('')}</div></div>` : ''}
+    ${raises.length ? `<div class="group"><h4 class="cap">What raises the risk</h4><div class="card">${raises.map(factor).join('')}</div></div>` : ''}
+    ${lowers.length ? `<div class="group"><h4 class="cap">What lowers the risk</h4><div class="card">${lowers.map(factor).join('')}</div></div>` : ''}
+    ${a.change.length ? `<div class="group"><h4 class="cap">How the score changes</h4><div class="card">${a.change.map(c => `<div class="note"><span style="color:var(--violet)">${ic('bulb', 'width:20px;height:20px')}</span>${c}</div>`).join('')}</div></div>` : ''}
+    <p class="b2" style="text-align:center;margin-top:20px;display:flex;gap:6px;justify-content:center;align-items:center">${ic('lock', 'width:13px;height:13px')}Advisory only. You decide whether to pay.</p>`;
+}
+function revealFactors(root) { root.querySelectorAll('.factor').forEach((f, i) => setTimeout(() => f.classList.add('in'), 700 + i * 100)); }
+function openReport(vpa, {pay, payLabel} = {}) {
+  const a = ACCOUNTS[vpa], poor = TYPE(a.score) === 'poor';
+  const s = sheet(reportHTML(vpa), pay ? `${btn(payLabel, {kind: poor ? 'danger' : '', id: 'r-pay', arrow: true})}
+    <div class="two">${btn('Cancel', {kind: 'white', id: 'r-cancel'})}${btn(ic('flag', 'width:17px;height:17px') + 'Report', {kind: 'white', id: 'r-report'})}</div>` : '');
+  animateMeter(s.el, a); revealFactors(s.el);
+  if (pay) {
+    $('#r-pay', s.el).onclick = async () => { await s.close(); pay(); };
+    $('#r-cancel', s.el).onclick = () => s.close();
+    $('#r-report', s.el).onclick = async () => { await s.close(); reportScam(vpa); };
+  }
+}
+window.speak = t => { try { const u = new SpeechSynthesisUtterance(t); u.lang = 'en-IN'; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {} };
+function reportScam(vpa) {
+  const cats = [['Scam payment', 'rupee'], ['Task scam', 'brief'], ['Investment scam', 'trend'], ['Fake shop', 'store'], ['Loan app', 'phone'], ['Impersonation', 'user']];
+  const s = sheet(`<span class="cap">Report an account</span><h3 class="d2" style="margin:8px 0 4px">What happened?</h3><p class="b2">${vpa}</p>
+    <div class="chips">${cats.map(([c, i], n) => `<button class="${n === 1 ? 'on' : ''}">${ic(i, 'width:16px;height:16px')}${c}</button>`).join('')}</div>
+    <label class="field"><input placeholder="Add details (optional)"></label>
+    <p class="b2" style="margin-top:14px">Investigators review every report. Confirmed reports raise this account's risk for everyone.</p>`,
+    btn(ic('flag', 'width:18px;height:18px') + 'Send report', {kind: 'danger', id: 'send'}));
+  s.el.querySelectorAll('.chips button').forEach(b => b.onclick = () => { s.el.querySelectorAll('.chips button').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+  $('#send', s.el).onclick = async () => { await s.close(); toast('Report sent for review', 'flag'); };
+}
+function txRow(t) {
+  return `<button class="tx" data-tx="${t.id}">${avatar(t.who, 46)}
+    <div class="who"><b>${t.who}</b><span class="b2">${t.via} · ${t.when.split(',')[0]}</span></div>
+    <div class="amt num" style="color:${t.in ? 'var(--good)' : 'var(--ink)'}">${t.in ? '+' : '−'}${fmt(t.amt)}
+      ${t.type ? `<span class="b2" style="display:flex;gap:4px;align-items:center;justify-content:flex-end;color:${TC[t.type]};margin-top:2px">${ic('shield', 'width:13px;height:13px')}${TL[t.type]}</span>` : `<span class="b2" style="display:block;margin-top:2px">Received</span>`}</div></button>`;
+}
+function bindTx() { app.querySelectorAll('[data-tx]').forEach(b => b.onclick = () => SCREENS.txn(Number(b.dataset.tx))); }
+
+const SCREENS = {
+  welcome() {
+    app.innerHTML = `<div class="welcome enter">
+      <span class="float-px" style="top:120px;left:40px"></span><span class="float-px" style="top:200px;right:46px;animation-delay:-2s;background:var(--lime)"></span><span class="float-px" style="top:330px;left:70px;animation-delay:-4s;width:8px;height:8px"></span>
+      <div class="hero rise"><div class="app-icon"><img src="${MARK}" alt="trace.pay"></div>
+        <img src="${LOCKUP}" alt="trace.pay" style="height:34px;margin-bottom:26px">
+        <h1 class="d1">Pay anyone.<br>Know them first.</h1>
+        <p class="b1" style="margin-top:12px;max-width:300px">Every UPI ID is checked for scams before your money leaves, on any app.</p>
+        <div class="feat">${[['shield', 'Risk score in one second', 'Before every payment'], ['scan', 'Works with any UPI QR', 'Google Pay, PhonePe, Paytm'], ['face', 'Protected by your device lock', 'Face ID, fingerprint, PIN or pattern']].map(([i, t, s]) =>
+          `<div><span class="fi">${ic(i)}</span><span><b class="t2" style="display:block">${t}</b><span class="b2">${s}</span></span></div>`).join('')}</div></div>
+      <div class="stack" style="margin-top:22px">${btn('Create account', {id: 'w-new', arrow: true})}${btn('Sign in', {kind: 'white', id: 'w-in'})}</div></div><div class="toast" id="toast"></div>`;
+    $('#w-new').onclick = () => SCREENS.signup(1); $('#w-in').onclick = () => SCREENS.signin();
+  },
+  signin() {
+    const m = state.signup === 'mobile';
+    render(`${back('welcome')}<div style="margin-top:30px">${mark(52)}</div>
+      <h2 class="d1" style="margin:22px 0 8px">Welcome back</h2><p class="b1" style="margin-bottom:24px">Sign in with your mobile number or email.</p>
+      <div class="switch"><button class="${m ? 'on' : ''}" id="sw-m">${ic('mobile', 'width:17px;height:17px')}Mobile</button><button class="${m ? '' : 'on'}" id="sw-e">${ic('mail', 'width:17px;height:17px')}Email</button></div>
+      <div class="stack">${m ? `<label class="field"><span class="pre">+91</span><input inputmode="tel" value="98480 12345" aria-label="Mobile number"></label>` : `<label class="field">${ic('mail')}<input value="kunal@klh.edu.in" aria-label="Email"></label>`}
+        <label class="field">${ic('lock')}<input type="password" id="pw" value="Supersecret#1" aria-label="Password"><button id="eye" aria-label="Show password">${ic('eye')}</button></label>
+        <button class="link" style="justify-self:end">Forgot password?</button></div>
+      <div style="margin-top:28px">${btn('Sign in', {id: 'go', arrow: true})}</div>`, {tabs: false, full: true});
+    $('#sw-m').onclick = () => { state.signup = 'mobile'; SCREENS.signin(); }; $('#sw-e').onclick = () => { state.signup = 'email'; SCREENS.signin(); };
+    $('#eye').onclick = () => { const p = $('#pw'); p.type = p.type === 'password' ? 'text' : 'password'; };
+    $('#go').onclick = () => deviceAuth('Unlock trace.pay', () => go('home'));
+  },
+  signup(step = 1) {
+    const head = (k, t, sub) => `<div class="row between"><button class="iconbtn" id="back" aria-label="Back">${ic('back')}</button><span class="b2">Step ${step} of 4</span></div>
+      <div class="progress">${[1, 2, 3, 4].map(i => `<i class="${i <= step ? 'on' : ''}"></i>`).join('')}</div>
+      <span class="cap">${k}</span><h2 class="d1" style="margin:10px 0 8px">${t}</h2><p class="b1" style="margin-bottom:24px">${sub}</p>`;
+    if (step === 1) {
+      const m = state.signup === 'mobile';
+      render(head('Create account', 'Let\'s set you up', 'Sign up with your mobile number or email.') + `
+        <div class="switch"><button class="${m ? 'on' : ''}" id="sw-m">${ic('mobile', 'width:17px;height:17px')}Mobile</button><button class="${m ? '' : 'on'}" id="sw-e">${ic('mail', 'width:17px;height:17px')}Email</button></div>
+        <div class="stack"><div><p class="cap label">Full name</p><label class="field">${ic('user')}<input value="Kunal Kumar Dappu" aria-label="Full name"></label></div>
+        ${m ? `<div><p class="cap label">Mobile number</p><label class="field"><span class="pre">+91</span><input inputmode="tel" value="98480 12345" aria-label="Mobile number"></label></div>`
+            : `<div><p class="cap label">Email</p><label class="field">${ic('mail')}<input value="kunal@klh.edu.in" aria-label="Email"></label></div>`}</div>
+        <div style="margin-top:30px">${btn('Continue', {id: 'next', arrow: true})}</div>
+        <p class="b2" style="text-align:center;margin-top:16px">By continuing you agree to the Terms and Privacy Policy.</p>`, {tabs: false, full: true});
+      $('#sw-m').onclick = () => { state.signup = 'mobile'; SCREENS.signup(1); }; $('#sw-e').onclick = () => { state.signup = 'email'; SCREENS.signup(1); };
+    } else if (step === 2) {
+      render(head('Security', 'Create a password', 'Use it to sign in on a new phone.') + `<label class="field">${ic('lock')}<input type="password" id="pw" placeholder="At least 12 characters" aria-label="Password"><button id="eye" aria-label="Show password">${ic('eye')}</button></label>
+        <div class="strength">${'<i></i>'.repeat(4)}</div>
+        <div class="rules">${[['.{12,}', '12+ characters'], ['[A-Z]', 'Uppercase letter'], ['[0-9]', 'A number'], ['[^A-Za-z0-9]', 'A symbol']].map(([r, t]) => `<span data-r="${r}">${ic('circle')}${t}</span>`).join('')}</div>
+        <label class="field" style="margin-top:18px">${ic('lock')}<input type="password" id="pw2" placeholder="Confirm password" aria-label="Confirm password"></label>
+        <div style="margin-top:30px">${btn('Continue', {id: 'next', arrow: true, attrs: 'disabled'})}</div>`, {tabs: false, full: true});
+      const cols = ['var(--bad)', 'var(--warn)', 'var(--violet-l)', 'var(--good)'];
+      const check = () => { const v = $('#pw').value; let n = 0;
+        app.querySelectorAll('.rules span').forEach(s => { const ok = new RegExp(s.dataset.r).test(v); s.classList.toggle('ok', ok); s.querySelector('use').setAttribute('href', ok ? '#i-checkc' : '#i-circle'); if (ok) n++; });
+        app.querySelectorAll('.strength i').forEach((b, i) => b.style.background = i < n ? cols[n - 1] : 'var(--hair)');
+        $('#next').disabled = !(n === 4 && v === $('#pw2').value); };
+      $('#pw').oninput = check; $('#pw2').oninput = check;
+      $('#eye').onclick = () => { const p = $('#pw'); p.type = p.type === 'password' ? 'text' : 'password'; };
+    } else if (step === 3) {
+      render(head('Identity', 'Take a live selfie', 'Encrypted and only checked for one clear face.') + `<div class="cam"><div class="oval" id="oval"><div class="face"></div></div><span class="camtag" id="pill">Looking for your face…</span></div>
+        <div style="margin-top:24px">${btn('Continue', {id: 'next', arrow: true, attrs: 'disabled'})}</div>`, {tabs: false, full: true});
+      [['Move a little closer', 900], ['Look straight ahead', 1800], ['Hold still', 2600], ['Captured', 3400]].forEach(([t, ms], i) => setTimeout(() => {
+        const p = $('#pill'); if (!p) return; p.textContent = t; if (i >= 2) { $('#oval').classList.add('ok'); p.classList.add('ok'); } if (i === 3) $('#next').disabled = false; }, ms));
+    } else {
+      render(head('Device lock', 'Lock trace.pay with your phone', 'We use the lock you already have. Nothing new to remember.') + `
+        <div class="lockart corners" style="--sq:var(--lime)">${ic(DEVICE.icon)}</div>
+        <div class="methods"><div class="on">${ic('face')}Face ID</div><div>${ic('finger')}Fingerprint</div><div>${ic('pin')}PIN or pattern</div></div>
+        <p class="b2" style="text-align:center;margin-top:14px">This iPhone uses Face ID. On Android, your fingerprint, PIN or pattern is used.</p>
+        <div style="margin-top:26px">${btn(`Turn on ${DEVICE.name}`, {id: 'next', arrow: true})}</div>`, {tabs: false, full: true});
+    }
+    $('#back').onclick = () => step === 1 ? SCREENS.welcome() : SCREENS.signup(step - 1);
+    $('#next').onclick = () => step < 4 ? SCREENS.signup(step + 1) : deviceAuth('Turn on device lock for trace.pay', () => SCREENS.ready());
+  },
+  ready() {
+    render(`<div style="text-align:center;padding-top:90px"><div class="okmark corners" style="--sq:var(--lime)">${ic('check')}</div>
+      <h2 class="d1" style="margin-top:38px">You're all set</h2><p class="b1" style="margin-top:8px">Your trace.pay ID is ready</p>
+      <div class="card" style="display:inline-flex;align-items:center;gap:12px;margin-top:22px;padding:12px 18px">${mark(30)}<b class="t1">kunal@tracepay</b>
+        <button aria-label="Copy" style="color:var(--violet)">${ic('copy', 'width:18px;height:18px')}</button></div>
+      <div class="soft" style="text-align:left;margin-top:28px;padding:4px 0">${[['shield', 'Every payment checked first'], ['face', `Locked with ${DEVICE.name}`], ['flag', 'Report scams, warn everyone']].map(([i, t]) =>
+        `<div class="setting"><span class="si" style="background:#fff">${ic(i)}</span><div><b class="t2">${t}</b></div>${ic('checkc', 'color:var(--good);width:20px;height:20px')}</div>`).join('')}</div></div>
+      <div style="position:absolute;left:22px;right:22px;bottom:34px">${btn('Go to home', {go: 'home', arrow: true})}</div>`, {tabs: false, full: true, rise: false});
+    burst();
+  },
+  locked() {
+    app.innerHTML = `<div class="welcome enter" style="justify-content:center;align-items:center;text-align:center">
+      <div class="app-icon" style="width:110px;height:110px"><img src="${MARK}" alt="trace.pay"></div>
+      <h2 class="d2">trace.pay is locked</h2><p class="b1" style="margin-top:8px">Unlock with the lock on this phone</p>
+      <div style="width:100%;margin-top:34px">${btn(ic(DEVICE.icon, 'width:20px;height:20px') + `Unlock with ${DEVICE.name}`, {id: 'un'})}</div>
+      <button class="link" style="margin-top:18px" id="pc">Use device passcode</button></div><div class="toast" id="toast"></div>`;
+    const unlock = () => deviceAuth('Unlock trace.pay', () => go('home'));
+    $('#un').onclick = unlock; $('#pc').onclick = unlock; setTimeout(unlock, 500);
+  },
+  home() {
+    const people = ['Meera Iyer', 'Rohan Shah', 'Kavya Nair', 'Ravi Teja'];
+    const learn = [['brief', 'Task scams', '"Like videos, earn money", then pay to unlock. Real jobs never ask you to pay.', 'linear-gradient(160deg,#FDEAE7,#FFF6F4)', 'var(--bad)'],
+      ['phone', 'Fake KYC calls', 'No bank asks for your UPI PIN or OTP on a call or link.', 'linear-gradient(160deg,#F1EDFF,#FAF8FF)', 'var(--violet)'],
+      ['trend', 'Investment groups', 'Guaranteed returns on WhatsApp or Telegram are scams.', 'linear-gradient(160deg,#FFF4DC,#FFFBF1)', 'var(--warn)']];
+    render(`<div class="topbar"><img src="${LOCKUP}" alt="trace.pay"><button class="iconbtn" data-go="alerts" aria-label="Notifications">${ic('bell', 'width:20px;height:20px')}<span class="dot"></span></button>
+        <button class="iconbtn" data-go="profile" aria-label="Profile" style="padding:0;overflow:hidden;border:0">${avatar('Kunal Dappu', 44)}</button></div>
+      <div class="hello"><p class="b1">Good morning,</p><h2 class="d1">Kunal</h2></div>
+      <div class="hero-card">${pixelT()}<div class="row between"><span style="font-size:13px;opacity:.8">Trace.Pay balance</span><span class="pill" style="background:rgba(198,255,61,.18);color:var(--lime)">${ic('shield', 'width:14px;height:14px')}Protected</span></div>
+        <div class="bal num">${fmt(state.balance)}</div><span class="vpa">kunal@tracepay ${ic('copy', 'width:14px;height:14px')}</span>
+        <div class="ha"><button class="lime" data-go="scan">${ic('scan', 'width:19px;height:19px')}Scan & pay</button><button class="glass" data-go="paymember">${ic('send', 'width:18px;height:18px')}Pay</button></div></div>
+      <div class="qa">${[['search', 'Check ID', 'check', ''], ['qr', 'My QR', 'myqr', ''], ['list', 'History', 'activity', ''], ['sos', 'Get help', 'help', 'sos']].map(([i, t, g, k]) =>
+        `<button data-act="${g}"><span class="q ${k}">${ic(i)}</span>${t}</button>`).join('')}</div>
+      <div class="section"><div class="card" style="padding:18px">
+        <div class="row"><div class="ringmini"><svg viewBox="0 0 66 66"><circle cx="33" cy="33" r="28" fill="none" stroke="var(--good-bg)" stroke-width="7"/><circle cx="33" cy="33" r="28" fill="none" stroke="var(--good)" stroke-width="7" stroke-linecap="round" stroke-dasharray="${2 * Math.PI * 28 * .92} 999"/></svg><b>${ic('shield', 'width:22px;height:22px')}</b></div>
+          <div><span class="cap">October safety</span><b class="d3" style="display:block;margin-top:4px">You're well protected</b><span class="b2">Every payment was checked first</span></div></div>
+        <div class="stats"><div><b class="num">23</b><span class="b2">Checked</span></div><div><b class="num" style="color:var(--bad)">2</b><span class="b2">Risky stopped</span></div><div><b class="num">₹8.4k</b><span class="b2">Kept safe</span></div></div></div></div>
+      <button class="banner" style="margin-top:12px" data-go="alerts"><span class="bi">${ic('alert', 'width:20px;height:20px')}</span>
+        <span style="flex:1"><b class="t2" style="display:block">An account you checked was reported</b><span class="b2">quickearn.collect@ybl now has 2 reports</span></span>${ic('chev', 'color:var(--bad)')}</button>
+      <div class="section"><div class="shead"><h3 class="d3">Recent</h3><button class="link" data-go="activity">See all</button></div>
+        ${state.activity.slice(0, 3).map(txRow).join('')}</div>
+      <div class="section"><div class="shead"><h3 class="d3">Pay again</h3></div>
+        <div class="row" style="gap:18px">${people.map(p => `<button data-pay="${p}" style="display:flex;flex-direction:column;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-2)">${avatar(p, 56)}${p.split(' ')[0]}</button>`).join('')}</div></div>
+      <div class="section"><div class="shead"><h3 class="d3">Know the scams</h3></div>
+        <div class="learn">${learn.map(l => `<div class="lc" style="background:${l[3]}"><span class="li" style="color:${l[4]}">${ic(l[0])}</span><b class="t1" style="display:block;margin-bottom:6px">${l[1]}</b><p class="b2">${l[2]}</p></div>`).join('')}</div></div>`);
+    app.querySelectorAll('[data-pay]').forEach(b => b.onclick = () => SCREENS.paymember(b.dataset.pay === 'Meera Iyer' ? 'meera.iyer@tracepay' : 'arjun.k@tracepay'));
+    app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => b.dataset.act === 'myqr' ? myQR() : go(b.dataset.act));
+    bindTx();
+  },
+  activity() {
+    const week = [['T', 240], ['F', 980], ['S', 120], ['S', 30], ['M', 60], ['T', 1450], ['W', 970]];
+    const max = Math.max(...week.map(w => w[1]));
+    render(`<div class="row between"><h2 class="d1">Activity</h2><button class="iconbtn" aria-label="Download statement">${ic('file', 'width:20px;height:20px')}</button></div>
+      <p class="b1" style="margin-top:4px">Trace.Pay and other UPI apps, together</p>
+      <div class="soft" style="padding:20px;margin-top:20px"><div class="row between"><span class="cap">Spent in October</span><span class="pill" style="background:var(--good-bg);color:var(--good)">▼ 12% vs Sep</span></div>
+        <div class="d1 num" style="margin-top:10px">${fmt(8420)}</div>
+        <div class="bars">${week.map((w, i) => `<div class="${i === 6 ? 'today' : ''}"><i style="height:0"></i><span class="b2">${w[0]}</span></div>`).join('')}</div></div>
+      <div class="chips" style="margin:20px 0 6px">${['All', 'Trace.Pay', 'Other apps', 'Received'].map((f, i) => `<button class="${i ? '' : 'on'}">${f}</button>`).join('')}</div>
+      <span class="cap" style="display:block;margin:16px 2px 4px">This week</span>${state.activity.map(txRow).join('')}`);
+    requestAnimationFrame(() => app.querySelectorAll('.bars i').forEach((b, i) => b.style.height = Math.max(6, week[i][1] / max * 100) + '%'));
+    app.querySelectorAll('.chips button').forEach(b => b.onclick = () => { app.querySelectorAll('.chips button').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+    bindTx();
+  },
+  txn(id = 2) {
+    const t = state.activity.find(x => x.id === id) || state.activity[1];
+    render(`<div class="row between">${back(tab)}<span class="b2">Payment details</span><button class="iconbtn" aria-label="Share">${ic('share', 'width:20px;height:20px')}</button></div>
+      <div style="text-align:center;margin-top:26px">${avatar(t.who, 64)}<p class="b1" style="margin-top:14px">${t.in ? 'Received from' : 'Paid to'} <b style="color:var(--ink);font-weight:500">${t.who}</b></p>
+        <div class="num" style="font-weight:600;font-size:50px;letter-spacing:-.04em;margin-top:6px">${fmt(t.amt)}</div>
+        <span class="pill" style="background:var(--good-bg);color:var(--good);margin-top:10px">${ic('checkc', 'width:15px;height:15px')}Completed</span></div>
+      <div class="soft" style="margin-top:26px;padding:18px"><div class="timeline">
+        ${t.type ? `<div class="tl"><b class="t2">Checked by trace.pay</b><p class="b2">Risk ${ACCOUNTS[t.vpa] ? ACCOUNTS[t.vpa].score : 4}% · ${TL[t.type]}</p></div>` : ''}
+        <div class="tl"><b class="t2">${t.in ? 'Received' : 'Paid'} via ${t.via}</b><p class="b2">${t.when}</p></div>
+        <div class="tl"><b class="t2">Saved to your activity</b><p class="b2">${t.when}</p></div></div></div>
+      <div class="card" style="margin-top:14px"><div class="kv"><span>${t.in ? 'From' : 'To'}</span>${t.vpa}</div><div class="kv"><span>UPI reference</span><span class="num" style="color:var(--ink)">4312 0967 8821</span></div><div class="kv"><span>App</span>${t.via}</div></div>
+      <div class="stack" style="margin-top:22px">${btn(ic('share', 'width:18px;height:18px') + 'Share receipt', {kind: 'white'})}${btn(ic('flag', 'width:18px;height:18px') + 'Report a problem', {kind: 'white', id: 'rp'})}</div>`, {tabs: false});
+    $('#rp').onclick = () => reportScam(t.vpa);
+  },
+  scan() {
+    app.insertAdjacentHTML('beforeend', `<div class="scan enter" id="scan"><div class="feed"></div>
+      <div class="top"><button class="round" id="sx" aria-label="Close">${ic('x')}</button><img src="${MARK}" width="34" height="34" alt="trace.pay"><button class="round" id="torch" aria-label="Torch">${ic('torch')}</button></div>
+      <div class="frame corners"><span class="beam"></span><svg class="code" viewBox="0 0 25 25" fill="#fff" shape-rendering="crispEdges">${qrCells()}</svg></div>
+      <div class="hint b1" style="color:rgba(255,255,255,.75)">Point at any UPI QR code</div>
+      <div class="found"><span id="found">${ic('checkc', 'width:17px;height:17px')}Found</span></div>
+      <div class="zoom"><button class="on">1×</button><button>2×</button><button>3×</button></div>
+      <div class="tray"><div class="grab"></div><div class="switch" style="margin-bottom:16px"><button class="on">${ic('scan', 'width:17px;height:17px')}Scan</button><button id="gal">${ic('image', 'width:17px;height:17px')}Photos</button><button id="mine">${ic('qr', 'width:17px;height:17px')}My QR</button></div>
+        <p class="cap" style="margin-bottom:10px">Demo codes · tap to simulate</p>
+        <div class="demo">${QRS.map((q, i) => `<button data-q="${i}"><span class="applogo" style="width:38px;height:38px;border-radius:12px;background:${q.color}">${q.app[0]}</span><span><b class="t2" style="display:block">${q.label}</b><span class="b2">${q.app} QR</span></span></button>`).join('')}</div></div></div>`);
+    const sc = $('#scan');
+    $('#sx').onclick = () => { sc.remove(); go(tab); };
+    $('#torch').onclick = () => $('#torch').classList.toggle('on');
+    sc.querySelectorAll('.zoom button').forEach(b => b.onclick = () => { sc.querySelectorAll('.zoom button').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+    $('#gal').onclick = () => toast('Opens Photos to read a saved QR', 'image');
+    $('#mine').onclick = () => myQR();
+    sc.querySelectorAll('[data-q]').forEach(b => b.onclick = () => { const q = QRS[b.dataset.q];
+      $('#found').innerHTML = `${ic('checkc', 'width:17px;height:17px')}${q.label}`; sc.classList.add('locked'); if (navigator.vibrate) navigator.vibrate(30);
+      setTimeout(() => { sc.remove(); q.vpa.endsWith('@tracepay') ? SCREENS.paymember(q.vpa) : SCREENS.external(q); }, 1100); });
+  },
+  external(q = QRS[0]) {
+    render(`<div class="row between">${back('home', 'x')}<span class="b2">${q.app} QR</span><span style="width:44px"></span></div>
+      <div style="text-align:center;margin-top:22px">${avatar(q.label, 68)}<h3 class="d2" style="margin-top:14px">${q.label}</h3><p class="b2">${q.vpa}</p></div>
+      <div class="field" style="height:84px;margin-top:24px;justify-content:center;gap:4px"><span style="font-weight:500;font-size:34px;color:var(--faint)">₹</span><input id="amt" inputmode="decimal" value="${q.amt || ''}" aria-label="Amount" style="font-weight:600;font-size:44px;letter-spacing:-.03em;flex:0 1 170px"></div>
+      <label class="field" style="margin-top:10px;height:52px"><input placeholder="Add a note (optional)" style="font-weight:400;font-size:15px"></label>
+      <div class="section"><div class="shead"><h3 class="d3">Pay with</h3><span class="b2">checked first</span></div>
+        <div class="card">${UPI_APPS.map((a, i) => `<button class="approw" data-app="${i}"><span class="applogo" style="width:44px;height:44px;border-radius:14px;background:${a.color};font-size:18px">${a.name[0]}</span>
+          <div style="flex:1"><b class="t1" style="display:block">${a.name}</b><span class="b2" style="color:${a.installed ? 'var(--good)' : 'var(--faint)'}">${a.installed ? 'Installed' : 'Not installed'}</span></div>${ic('chev', 'color:var(--faint)')}</button>`).join('')}</div></div>
+      <p class="b2" style="margin-top:18px;display:flex;gap:8px;align-items:center">${ic('lock', 'width:15px;height:15px')}Your UPI PIN is only entered in your UPI app.</p>`, {tabs: false});
+    app.querySelectorAll('[data-app]').forEach(b => b.onclick = () => {
+      const a = UPI_APPS[b.dataset.app], amt = $('#amt').value;
+      if (!(Number(amt) > 0)) return toast('Enter the amount first', 'alert');
+      openReport(q.vpa, {payLabel: `Pay ${fmt(amt)} with ${a.name}`, pay: () => handoff(a, q, amt)});
+    });
+  },
+  paymember(vpa = 'arjun.k@tracepay') {
+    const a = ACCOUNTS[vpa] || ACCOUNTS['arjun.k@tracepay']; let amt = '';
+    render(`<div class="row between">${back('home', 'x')}<span class="b2">Pay</span><span style="width:44px"></span></div>
+      <div style="text-align:center;margin-top:16px">${avatar(a.name, 58)}<b class="t1" style="display:block;margin-top:10px">${a.name}</b><span class="b2">${vpa}</span>
+        ${a.isNew ? `<div style="margin-top:10px"><span class="pill" style="background:var(--warn-bg);color:#9A6200">${ic('alert', 'width:14px;height:14px')}First payment to this person</span></div>` : ''}</div>
+      <div class="amount num" id="amt">₹0</div><p class="b2" style="text-align:center">Balance ${fmt(state.balance)}</p>
+      <div class="keypad">${['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'].map(k => `<button data-k="${k}">${k}</button>`).join('')}</div>
+      ${btn(ic('shield', 'width:19px;height:19px') + 'Check & continue', {id: 'cont', attrs: 'disabled'})}`, {tabs: false, full: true, rise: false});
+    app.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { const k = b.dataset.k;
+      if (k === '⌫') amt = amt.slice(0, -1); else if (!(k === '.' && amt.includes('.')) && amt.length < 7) amt += k;
+      $('#amt').textContent = '₹' + (amt ? Number(amt).toLocaleString('en-IN') + (amt.endsWith('.') ? '.' : '') : '0'); $('#cont').disabled = !(Number(amt) > 0); });
+    $('#cont').onclick = () => openReport(vpa, {payLabel: `Pay ${fmt(amt)}`, pay: () => (state.cooling && a.isNew && Number(amt) >= 5000) ? cooling(a, amt, vpa) : confirmPay(a, amt, vpa)});
+  },
+  check() {
+    render(`<h2 class="d1">Check any UPI ID</h2><p class="b1" style="margin-top:6px">Trace.Pay, Google Pay, PhonePe, Paytm or a bank.</p>
+      <label class="field" style="margin-top:22px">${ic('search')}<input id="q" placeholder="name@okaxis" autocapitalize="none" aria-label="UPI ID"><button aria-label="Scan instead" data-go="scan" style="color:var(--violet)">${ic('scan')}</button></label>
+      <div style="margin-top:14px">${btn(ic('shield', 'width:19px;height:19px') + 'Check UPI ID', {id: 'go'})}</div>
+      <div class="section" id="out"><span class="cap" style="display:block;margin-bottom:4px">Recent checks</span>
+        ${Object.entries(ACCOUNTS).map(([k, v]) => `<button class="tx" data-try="${k}">${avatar(v.name, 46)}<div class="who"><b>${v.name}</b><span class="b2">${k}</span></div>
+          <span class="pill num" style="background:${TBG[TYPE(v.score)]};color:${TC[TYPE(v.score)]}">${v.score}%</span></button>`).join('')}</div>`);
+    const run = vpa => { const v = (vpa || $('#q').value).trim().toLowerCase(); if (!ACCOUNTS[v]) return toast('Try one of the recent checks', 'alert'); $('#q').value = v;
+      $('#out').innerHTML = `<div>${reportHTML(v)}</div><div style="margin-top:18px">${btn(ic('flag', 'width:17px;height:17px') + 'Report this account', {kind: 'white', id: 'rep'})}</div>`;
+      animateMeter($('#out'), ACCOUNTS[v]); revealFactors($('#out')); $('#rep').onclick = () => reportScam(v); };
+    $('#go').onclick = () => run();
+    app.querySelectorAll('[data-try]').forEach(b => b.onclick = () => run(b.dataset.try));
+  },
+  alerts() {
+    const items = [['alert', 'var(--bad-bg)', 'var(--bad)', 'An account you checked was reported', 'quickearn.collect@ybl now has 2 scam reports. Don\'t pay it.', '2h'],
+      ['checkc', 'var(--good-bg)', 'var(--good)', 'Payment recorded', '₹120 to Chai Corner via PhonePe', 'Yesterday'],
+      ['shield', 'var(--violet-soft)', 'var(--violet)', 'New scam pattern near you', 'Fake electricity-bill messages ask people to pay ₹499.', 'Mon'],
+      ['down', 'var(--good-bg)', 'var(--good)', 'Money received', '₹2,000 from Rohan Shah', 'Mon']];
+    render(`<div class="row between">${back('home')}<button class="link">Mark all read</button></div>
+      <h2 class="d1" style="margin-top:22px">Alerts</h2>
+      <div style="margin-top:14px">${items.map(([i, bg, fg, t, d, w]) => `<div class="setting" style="align-items:flex-start;padding:16px 0"><span class="si" style="background:${bg};color:${fg}">${ic(i, 'width:20px;height:20px')}</span>
+        <div><b class="t2">${t}</b><p class="b2" style="margin-top:3px">${d}</p></div><span class="b2">${w}</span></div>`).join('')}</div>
+      <button class="banner" style="margin-top:20px;background:var(--canvas)" data-go="help"><span class="bi" style="color:var(--bad)">${ic('sos', 'width:20px;height:20px')}</span>
+        <span style="flex:1"><b class="t2" style="display:block">Been scammed?</b><span class="b2">Act within the first hour. We'll guide you.</span></span>${ic('chev', 'color:var(--faint)')}</button>`, {tabs: false});
+  },
+  profile() {
+    const sw = (k, icon, t, s) => `<div class="setting"><span class="si">${ic(icon, 'width:20px;height:20px')}</span><div><b class="t2">${t}</b><span class="b2" style="display:block">${s}</span></div><button class="toggle ${state[k] ? 'on' : ''}" data-t="${k}" role="switch" aria-checked="${state[k]}" aria-label="${t}"></button></div>`;
+    const nav = (icon, t, s) => `<button class="setting"><span class="si">${ic(icon, 'width:20px;height:20px')}</span><div><b class="t2">${t}</b>${s ? `<span class="b2" style="display:block">${s}</span>` : ''}</div>${ic('chev', 'color:var(--faint)')}</button>`;
+    render(`<h2 class="d1">Profile</h2>
+      <div class="hero-card" style="margin-top:20px;padding:20px">${pixelT()}<div class="row">${avatar('Kunal Dappu', 58).replace('class="avatar"', 'class="avatar" style="background:rgba(255,255,255,.16);color:#fff"')}
+        <div style="flex:1"><b class="t1" style="display:block">Kunal Kumar Dappu</b><span style="font-size:13px;opacity:.8">kunal@tracepay · +91 98480 12345</span></div></div>
+        <div class="ha"><button class="lime" id="qr">${ic('qr', 'width:18px;height:18px')}My QR</button><button class="glass">${ic('copy', 'width:17px;height:17px')}Copy ID</button></div></div>
+      <div class="section"><span class="cap" style="display:block;margin:0 2px 10px">Security</span><div class="card">
+        ${sw('lock', 'face', 'Device lock', 'Face ID, fingerprint, PIN or pattern, as set on your phone')}
+        ${nav('devices', 'Signed-in devices', 'iPhone 15 · this phone')}${nav('lock', 'Change password', '')}</div></div>
+      <div class="section"><span class="cap" style="display:block;margin:0 2px 10px">Payment safety</span><div class="card">
+        ${sw('cooling', 'hour', 'Cooling-off for new payees', 'Pause before a first payment of ₹5,000+')}
+        <div class="setting"><span class="si">${ic('gauge', 'width:20px;height:20px')}</span><div><b class="t2">Daily limit</b><span class="b2 num" id="lim" style="display:block">${fmt(state.limit)}</span></div>
+          <button class="iconbtn" id="minus" aria-label="Lower limit" style="width:38px;height:38px">−</button><button class="iconbtn" id="plus" aria-label="Raise limit" style="width:38px;height:38px">+</button></div>
+        ${sw('voice', 'volume', 'Read the risk aloud', 'Speaks every risk verdict')}</div></div>
+      <div class="section"><span class="cap" style="display:block;margin:0 2px 10px">App</span><div class="card">${nav('globe', 'Language', 'English')}${nav('doc', 'Privacy & terms', '')}${nav('sos', 'Help & support', '')}</div></div>
+      <div style="margin-top:24px">${btn(ic('logout', 'width:18px;height:18px') + 'Sign out', {kind: 'white', go: 'welcome'})}</div>
+      <p class="b2" style="text-align:center;margin-top:18px">trace.pay · version 6.0</p>`);
+    app.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { const k = b.dataset.t; const apply = () => { state[k] = !state[k]; b.classList.toggle('on'); b.setAttribute('aria-checked', state[k]); };
+      k === 'lock' ? deviceAuth(state.lock ? 'Turn off device lock' : 'Turn on device lock', apply) : apply(); });
+    $('#minus').onclick = () => { state.limit = Math.max(1000, state.limit - 5000); $('#lim').textContent = fmt(state.limit); };
+    $('#plus').onclick = () => { state.limit = Math.min(100000, state.limit + 5000); $('#lim').textContent = fmt(state.limit); };
+    $('#qr').onclick = () => myQR();
+  },
+  help() {
+    render(`<div class="row between">${back('home')}<span class="b2">Emergency help</span><span style="width:44px"></span></div>
+      <span style="display:inline-grid;place-items:center;width:58px;height:58px;border-radius:18px;background:var(--bad-bg);color:var(--bad);margin-top:24px">${ic('sos', 'width:28px;height:28px')}</span>
+      <h2 class="d1" style="margin-top:18px">Act within the first hour</h2><p class="b1" style="margin-top:8px">Money reported quickly is the easiest to freeze.</p>
+      <div class="card" style="margin-top:22px">${[['phone', 'Call 1930', 'National cyber-crime helpline. Share the amount, time and UPI ID.', 's1'], ['doc', 'File a complaint', 'At cybercrime.gov.in. Keep screenshots of the chat and payment.', 's2'], ['bank', 'Call your bank', 'Ask them to block the transaction and raise a dispute.', 's3']].map(([i, t, d, id]) =>
+        `<button class="setting" id="${id}" style="align-items:flex-start"><span class="si" style="background:var(--bad-bg);color:var(--bad)">${ic(i, 'width:20px;height:20px')}</span><div><b class="t1">${t}</b><p class="b2" style="margin-top:3px">${d}</p></div>${ic('chev', 'color:var(--faint)')}</button>`).join('')}</div>
+      <div class="soft" style="margin-top:16px;padding:20px"><b class="t1">Warn others</b><p class="b2" style="margin-top:3px">Report the account so everyone gets a warning.</p>
+        <label class="field" style="margin:14px 0 16px;background:#fff">${ic('link')}<input id="scammer" placeholder="Scammer's UPI ID" autocapitalize="none" aria-label="Scammer's UPI ID"></label>
+        ${btn(ic('flag', 'width:17px;height:17px') + 'Report on trace.pay', {kind: 'danger', id: 'rep'})}</div>`, {tabs: false});
+    $('#rep').onclick = () => reportScam($('#scammer').value || 'quickearn.collect@ybl');
+    $('#s1').onclick = () => toast('Opens the phone dialler: 1930', 'phone');
+    $('#s2').onclick = () => toast('Opens cybercrime.gov.in', 'doc');
+  },
+};
+
+function handoff(a, q, amt) {
+  if (!a.installed) return dialog(`${a.name} isn't installed`, `We copied ${q.vpa}. Pay in any UPI app, or install ${a.name}.`, [{label: `Get ${a.name}`}, {label: 'OK', kind: 'white'}]);
+  app.insertAdjacentHTML('beforeend', `<div class="handoff enter" id="ho" style="background:linear-gradient(160deg,${a.color},#0B061D 140%)">
+    <div><div class="logo" style="color:${a.color}">${a.name[0]}</div><h3 class="d2">Opening ${a.name}</h3>
+    <div class="dots"><i></i><i></i><i></i></div><p class="b1" style="color:rgba(255,255,255,.85);max-width:270px;margin:0 auto 30px">Enter your UPI PIN in ${a.name} to pay ${fmt(amt)} to ${q.label}.</p>
+    ${btn('Return to trace.pay', {kind: 'white', id: 'back', full: false})}</div></div>`);
+  $('#back').onclick = () => { $('#ho').remove();
+    dialog('Did the payment go through?', `${a.name} doesn't report back on iPhone, so confirm to save it.`, [
+      {label: 'Yes, I paid', run: () => { state.activity.unshift({id: Date.now(), who: q.label, vpa: q.vpa, via: a.name, amt: Number(amt), in: false, when: 'Just now', type: TYPE(ACCOUNTS[q.vpa].score)}); success(q.label, amt, a.name); }},
+      {label: 'No', kind: 'white'}]); };
+}
+function cooling(a, amt, vpa) {
+  let left = 10;
+  render(`<div style="text-align:center;padding-top:60px"><span class="cap">Cooling-off</span><div class="bigring"><svg viewBox="0 0 200 200"><circle cx="100" cy="100" r="88" stroke="var(--canvas)" stroke-width="10" fill="none"/>
+      <circle cx="100" cy="100" r="88" stroke="var(--violet)" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="553" stroke-dashoffset="0" id="rc" style="transition:stroke-dashoffset 1s linear"/></svg><b id="rt" class="num">0:10</b></div>
+      <h2 class="d2">Take a moment</h2><p class="b1" style="max-width:300px;margin:8px auto 28px">This is your first payment of ${fmt(amt)} to ${a.name}. Scammers rush you. Do you know this person?</p>
+      ${btn('Cancel payment', {kind: 'white', go: 'home'})}<p class="b2" style="margin-top:14px">The real app waits 1, 5 or 10 minutes.</p></div>`, {tabs: false, full: true, rise: false});
+  const t = setInterval(() => { left--; const rt = $('#rt'); if (!rt) return clearInterval(t); rt.textContent = '0:' + String(left).padStart(2, '0'); $('#rc').style.strokeDashoffset = 553 * (1 - left / 10);
+    if (left <= 0) { clearInterval(t); confirmPay(a, amt, vpa); } }, 1000);
+}
+function confirmPay(a, amt, vpa) {
+  deviceAuth(`Pay ${fmt(amt)} to ${a.name}`, () => { state.balance -= Number(amt); state.activity.unshift({id: Date.now(), who: a.name, vpa, via: 'Trace.Pay', amt: Number(amt), in: false, when: 'Just now', type: TYPE(a.score)}); success(a.name, amt, 'Trace.Pay'); });
+}
+function success(who, amt, via) {
+  render(`<div style="text-align:center;padding-top:104px"><div class="okmark corners" style="--sq:var(--lime)">${ic('check')}</div>
+      <p class="b1" style="margin-top:38px">Paid to ${who}</p><div class="num" style="font-weight:600;font-size:54px;letter-spacing:-.04em;margin-top:6px">${fmt(amt)}</div>
+      <p class="b2" style="margin-top:8px">via ${via} · checked by trace.pay</p>
+      <span class="pill num" style="background:var(--canvas);color:var(--muted);margin-top:16px">Ref 4312 ${Math.floor(1000 + Math.random() * 9000)} ${Math.floor(1000 + Math.random() * 9000)}</span></div>
+    <div style="position:absolute;left:22px;right:22px;bottom:34px" class="stack">${btn(ic('share', 'width:18px;height:18px') + 'Share receipt', {kind: 'white'})}${btn('Done', {go: 'home'})}</div>`, {tabs: false, full: true, rise: false});
+  burst();
+}
+function qrCells() {
+  let cells = '', seed = 11;
+  for (let y = 0; y < 25; y++) for (let x = 0; x < 25; x++) { seed = (seed * 9301 + 49297) % 233280;
+    const inF = (fx, fy) => x >= fx && x < fx + 7 && y >= fy && y < fy + 7;
+    const fin = (fx, fy) => { const dx = x - fx, dy = y - fy; return dx === 0 || dy === 0 || dx === 6 || dy === 6 || (dx > 1 && dx < 5 && dy > 1 && dy < 5); };
+    const mid = x > 9 && x < 15 && y > 9 && y < 15;
+    let on; if (inF(0, 0)) on = fin(0, 0); else if (inF(18, 0)) on = fin(18, 0); else if (inF(0, 18)) on = fin(0, 18); else on = !mid && seed / 233280 > .52;
+    if (on) cells += `<rect x="${x}" y="${y}" width="1" height="1"/>`; }
+  return cells;
+}
+function myQR() {
+  sheet(`<div style="text-align:center"><span class="cap">My QR</span><h3 class="d2" style="margin-top:8px">Scan to pay me</h3><p class="b2">Works with any UPI app</p></div>
+    <div class="qrbox corners"><svg viewBox="0 0 25 25" fill="var(--ink)" shape-rendering="crispEdges">${qrCells()}</svg><img class="center" src="${MARK}" alt=""></div>
+    <p class="t1" style="text-align:center">Kunal Kumar Dappu</p><p class="b2" style="text-align:center">kunal@tracepay</p>`,
+    `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${btn(ic('copy', 'width:17px;height:17px') + 'Copy ID', {kind: 'white'})}${btn(ic('share', 'width:17px;height:17px') + 'Share')}</div>`);
+}
+
+document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
+  app.querySelectorAll('.scan,.handoff,.sysprompt,.scrim,.sheet,.dialog,.burst').forEach(el => el.remove());
+  const j = b.dataset.jump;
+  if (j === 'risky') { tab = 'home'; go('home'); setTimeout(() => openReport('quickearn.collect@ybl'), 250); }
+  else if (j === 'external') SCREENS.external(QRS[0]);
+  else if (j === 'paymember') SCREENS.paymember('arjun.k@tracepay');
+  else if (j === 'txn') { tab = 'activity'; SCREENS.txn(2); }
+  else go(j);
+});
+SCREENS.welcome();
+</script>
+</body>
+</html>

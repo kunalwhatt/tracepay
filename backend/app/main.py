@@ -18,7 +18,7 @@ from pathlib import Path
 import cv2, numpy as np, jwt
 from .db import Base, engine, get_db, SessionLocal
 from .models import User, Transaction, IngestionJob, AuditEvent, RiskAssessment, PaymentIntent, PilotProfile, PilotMerchant, PilotTransfer, PilotWallet, PilotLedgerEntry, InvestigationCase, InvestigationReport, SourceConflict, Complaint, AccountLabel
-from .schemas import RegisterIn, LoginIn, TokenOut, UserOut, RiskIn, RiskOut, TransactionOut, IngestionOut, PaymentIntentIn, PaymentIntentOut, CaseIn, CaseOut, ReportIn, ReportOut
+from .schemas import RegisterIn, LoginIn, TokenOut, UserOut, RiskIn, RiskOut, TransactionOut, IngestionOut, PaymentIntentIn, PaymentIntentOut, CaseIn, CaseOut, ReportIn, ReportOut, normalize_mobile
 from .security import hash_password, verify_password, create_token, renew_token, current_user, require_roles, security as bearer_scheme
 from .engine import assess_recipient, graph_for_account, summarize_account, network_timeseries, collect_neighbourhood, recent_movements, _movements_for
 from . import traceflow, tracesense, tracerank, tracebench
@@ -30,7 +30,7 @@ from .ids import normalize_tracepay_id, parse_upi
 from . import community
 from .models import ScamReport, ExternalPayment
 
-APP_VERSION = "5.2.0"
+APP_VERSION = "5.3.0"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
@@ -299,6 +299,8 @@ def startup():
             "ALTER TABLE pilot_transfers ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE investigation_cases ADD COLUMN IF NOT EXISTS account_ref VARCHAR(255)",
             "ALTER TABLE pilot_merchants ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(10)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_mobile ON users (mobile)",
         ):
             conn.execute(text(statement))
     Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos")).mkdir(parents=True, exist_ok=True)
@@ -317,22 +319,36 @@ def health(): return {"status": "ok", "service": "tracepay-api", "version": APP_
 
 @app.post("/api/v1/auth/register", response_model=UserOut, status_code=201)
 def register(body: RegisterIn, db: Session = Depends(get_db)):
-    email = body.email.lower()
-    if db.scalar(select(User).where(User.email == email)): raise HTTPException(409, "An account with this email already exists")
-    # Self-registration is analyst-only. Elevated roles are assigned out-of-band by an administrator.
-    user = User(email=email, password_hash=hash_password(body.password), role="pilot_user")
+    """Create a member account with an email or a mobile number (no OTP)."""
+    email = body.email.lower() if body.email else f"m{body.mobile}@mobile.tracepay.app"
+    if db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(409, "An account with this email already exists")
+    if body.mobile and db.scalar(select(User).where(User.mobile == body.mobile)):
+        raise HTTPException(409, "An account with this mobile number already exists")
+    # Self-registration creates members only. Elevated roles are assigned by an administrator.
+    user = User(email=email, mobile=body.mobile, password_hash=hash_password(body.password), role="pilot_user")
     db.add(user)
     try: db.commit()
     except IntegrityError: db.rollback(); raise HTTPException(409, "Account already exists")
     db.refresh(user)
-    db.add(AuditEvent(actor_user_id=user.id, action="auth.register", object_ref=str(user.id))); db.commit()
+    db.add(AuditEvent(actor_user_id=user.id, action="auth.register", object_ref=str(user.id),
+                      detail=json.dumps({"method": "mobile" if body.mobile and not body.email else "email"}))); db.commit()
     return user
 
 @app.post("/api/v1/auth/login", response_model=TokenOut)
 def login(body: LoginIn, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == body.email.lower()))
+    """Sign in with an email or a mobile number and password."""
+    ident = (body.identifier or body.email or "").strip()
+    if not ident:
+        raise HTTPException(422, "Enter your email or mobile number")
+    if "@" in ident:
+        user = db.scalar(select(User).where(User.email == ident.lower()))
+    else:
+        try: mobile = normalize_mobile(ident)
+        except ValueError: raise HTTPException(401, "Invalid mobile number or password")
+        user = db.scalar(select(User).where(User.mobile == mobile))
     if not user or not user.active or not verify_password(body.password, user.password_hash):
-        raise HTTPException(401, "Invalid email or password")
+        raise HTTPException(401, "Invalid email, mobile number or password")
     db.add(AuditEvent(actor_user_id=user.id, action="auth.login", object_ref=str(user.id))); db.commit()
     return TokenOut(access_token=create_token(user), role=user.role)
 
