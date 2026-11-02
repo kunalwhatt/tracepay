@@ -3,10 +3,25 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "tech.tracepay.android"
     compileSdk = 35
-    defaultConfig { applicationId = "tech.tracepay.android"; minSdk = 26; targetSdk = 35; versionCode = 60; versionName = "6.0.0" }
+    defaultConfig {
+        applicationId = "tech.tracepay.android"; minSdk = 26; targetSdk = 35
+        // CI sets these from the git tag (v6.0.2 -> 6.0.2) and the run number, so every release is newer than the last.
+        versionCode = (System.getenv("TP_VERSION_CODE") ?: "62").toInt()
+        versionName = System.getenv("TP_VERSION_NAME") ?: "6.0.2"
+        buildConfigField("String", "UPDATE_REPO", "\"kunalwhatt/tracepay\"")
+    }
+    // One permanent signing key (from GitHub secrets) so installed apps accept updates.
+    val tpKeystore = System.getenv("TP_KEYSTORE")
+    signingConfigs {
+        if (tpKeystore != null) create("tracepay") {
+            storeFile = file(tpKeystore); storePassword = System.getenv("TP_KEYSTORE_PASSWORD")
+            keyAlias = "tracepay"; keyPassword = System.getenv("TP_KEYSTORE_PASSWORD")
+        }
+    }
     buildTypes {
         // Debug talks to the development Mac over the LAN; cleartext HTTP is allowed only here.
         getByName("debug") {
+            if (tpKeystore != null) signingConfig = signingConfigs.getByName("tracepay")
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             buildConfigField("String", "TRACEPAY_API_BASE_URL", "\"https://tracepay-api.livelystone-3bd01cb7.centralindia.azurecontainerapps.io/\"")
         }
@@ -24,6 +39,7 @@ android {
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.10.0")
+    implementation("androidx.core:core-ktx:1.15.0")  // FileProvider for installing updates
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")

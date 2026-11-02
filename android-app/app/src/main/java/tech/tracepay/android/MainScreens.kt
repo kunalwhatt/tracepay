@@ -105,6 +105,21 @@ fun MainShell(api: TraceApi, activity: MainActivity, profile: Profile, onSignOut
     var myQr by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<ActivityItem?>(null) }
     var report by remember { mutableStateOf<String?>(null) }
+    val ctx = LocalContext.current
+    var update by remember { mutableStateOf<AppUpdate?>(null) }
+    var updateProgress by remember { mutableStateOf<Float?>(null) }
+    var updateMsg by remember { mutableStateOf("") }
+    var updatePrompt by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { update = Updater.check(); if (update != null) updatePrompt = true }
+    fun installUpdate() {
+        val u = update ?: return
+        if (!Updater.canInstall(ctx)) { updateMsg = "Allow \"Install unknown apps\" for trace.pay, then tap Install update again."; return }
+        updateMsg = ""; updateProgress = 0f
+        scope.launch {
+            try { val f = Updater.download(ctx, u) { p -> updateProgress = p }; updateProgress = null; Updater.install(ctx, f) }
+            catch (e: Exception) { updateProgress = null; updateMsg = e.message ?: "Update failed. Try again." }
+        }
+    }
     suspend fun refresh() {
         runCatching { balance = api.balance() }
         runCatching { transfers = api.transfers() }
@@ -149,7 +164,8 @@ fun MainShell(api: TraceApi, activity: MainActivity, profile: Profile, onSignOut
         Box(Modifier.padding(pad)) {
             when (tab) {
                 Tab.Home -> HomeScreen(profile, balance, items, transfers, mustVerify, onVerify = { verify = true }, onPay = { pay(it) }, onScan = { scanner = true },
-                    onCheck = { tab = Tab.Check }, onQr = { myQr = true }, onHistory = { tab = Tab.Activity }, onHelp = { help = true }, onItem = { detail = it })
+                    onCheck = { tab = Tab.Check }, onQr = { myQr = true }, onHistory = { tab = Tab.Activity }, onHelp = { help = true }, onItem = { detail = it },
+                    update = update, updateProgress = updateProgress, updateMsg = updateMsg, onUpdate = { installUpdate() })
                 Tab.Activity -> ActivityScreen(items) { detail = it }
                 Tab.Check -> CheckScreen(api) { report = it }
                 Tab.Profile -> ProfileScreen(activity, profile, onQr = { myQr = true }, onHelp = { help = true }, onSignOut = onSignOut)
@@ -157,6 +173,12 @@ fun MainShell(api: TraceApi, activity: MainActivity, profile: Profile, onSignOut
         }
     }
     if (myQr) MyQrSheet(profile) { myQr = false }
+    update?.let { u -> if (updatePrompt) AlertDialog(onDismissRequest = { updatePrompt = false },
+        icon = { Icon(Icons.Default.SystemUpdate, null, tint = TP.violet) },
+        title = { Text("Update available") },
+        text = { Text("trace.pay ${u.version} is ready. You're on ${BuildConfig.VERSION_NAME}. Install it now to get the latest fixes and features.") },
+        confirmButton = { TextButton({ updatePrompt = false; installUpdate() }) { Text("Install update", fontWeight = FontWeight.SemiBold) } },
+        dismissButton = { TextButton({ updatePrompt = false }) { Text("Later") } }) }
     detail?.let { d -> PaymentDetailSheet(d, onDismiss = { detail = null }, onReport = { detail = null; report = d.ref }) }
     report?.let { r -> ReportSheet(api, r) { report = null } }
 }
@@ -166,7 +188,8 @@ fun MainShell(api: TraceApi, activity: MainActivity, profile: Profile, onSignOut
 // ---------------------------------------------------------------------------------------------
 @Composable
 fun HomeScreen(profile: Profile, balance: String, items: List<ActivityItem>, transfers: List<Transfer>, mustVerify: Boolean, onVerify: () -> Unit, onPay: (String) -> Unit,
-               onScan: () -> Unit, onCheck: () -> Unit, onQr: () -> Unit, onHistory: () -> Unit, onHelp: () -> Unit, onItem: (ActivityItem) -> Unit) {
+               onScan: () -> Unit, onCheck: () -> Unit, onQr: () -> Unit, onHistory: () -> Unit, onHelp: () -> Unit, onItem: (ActivityItem) -> Unit,
+               update: AppUpdate? = null, updateProgress: Float? = null, updateMsg: String = "", onUpdate: () -> Unit = {}) {
     val ctx = LocalContext.current
     val hour = java.time.LocalTime.now().hour
     val people = remember(transfers) { transfers.filter { it.sender == profile.vpa && it.status == "SUCCESS" }.groupingBy { it.receiver }.eachCount().entries.sortedByDescending { it.value }.take(4).map { it.key } }
@@ -184,6 +207,22 @@ fun HomeScreen(profile: Profile, balance: String, items: List<ActivityItem>, tra
         Column {
             TText(when { hour < 12 -> "Good morning,"; hour < 17 -> "Good afternoon,"; else -> "Good evening," }, 15.sp, color = TP.muted)
             TText(profile.fullName.split(" ").first(), 32.sp, FontWeight.SemiBold)
+        }
+        if (update != null) Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(TP.ink).padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconSquare(Icons.Default.SystemUpdate, TP.ink, TP.lime, 44.dp); Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) { TText("Update available · ${update.version}", 15.sp, FontWeight.SemiBold, Color.White); TText("Install the latest trace.pay in one tap.", 12.5.sp, color = Color.White.copy(alpha = .7f)) }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (updateProgress != null) {
+                LinearProgressIndicator(progress = { updateProgress }, modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape), color = TP.lime, trackColor = Color.White.copy(alpha = .15f))
+                TText("Downloading ${(updateProgress * 100).toInt()}%", 12.5.sp, color = Color.White.copy(alpha = .8f), modifier = Modifier.padding(top = 8.dp))
+            } else {
+                Row(Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(14.dp)).background(TP.lime).clickable { onUpdate() }, horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Download, null, tint = TP.ink); Spacer(Modifier.width(8.dp)); TText("Install update", 15.sp, FontWeight.SemiBold)
+                }
+            }
+            if (updateMsg.isNotBlank()) TText(updateMsg, 12.5.sp, color = TP.lime, modifier = Modifier.padding(top = 8.dp))
         }
         if (mustVerify) Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(TP.violetSoft).border(1.dp, TP.violet.copy(alpha = .35f), RoundedCornerShape(18.dp)).clickable { onVerify() }.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -569,7 +608,7 @@ fun ProfileScreen(activity: MainActivity, profile: Profile, onQr: () -> Unit, on
         }
         SettingGroup("App") { SettingRow(Icons.Default.Support, "Help & emergency", "If you've been scammed", onClick = onHelp) { Icon(Icons.Default.ChevronRight, null, tint = TP.faint) } }
         NeoButton("Sign out", kind = NeoKind.White, icon = Icons.Default.Logout) { confirmOut = true }
-        TText("trace.pay · version 6.0", 12.5.sp, color = TP.muted, modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
+        TText("trace.pay · version ${BuildConfig.VERSION_NAME}", 12.5.sp, color = TP.muted, modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
     }
     if (confirmOut) AlertDialog(onDismissRequest = { confirmOut = false }, title = { Text("Sign out of trace.pay?") },
@@ -796,6 +835,7 @@ fun ExternalPayScreen(api: TraceApi, raw: String, onDone: () -> Unit) {
     var risk by remember { mutableStateOf<RiskReport?>(null) }
     var report by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
+    var guide by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var finished by remember { mutableStateOf<String?>(null) }
@@ -813,15 +853,21 @@ fun ExternalPayScreen(api: TraceApi, raw: String, onDone: () -> Unit) {
         if (res.resultCode == Activity.RESULT_OK && status != null) record(if (status.startsWith("SUCCESS")) "SUCCESS" else if (status.startsWith("SUBMIT")) "SUBMITTED" else "FAILURE", "upi_response", map["txnid"] ?: map["txnref"])
         else confirm = true
     }
-    fun launch() {
+    /** Recommended: copy the UPI ID and open the app normally, so the payment starts inside the UPI app as "pay to UPI ID"
+     *  (UPI apps restrict or decline ready-made payment links sent by other apps). */
+    fun openToPaste() {
         val app = chosen ?: return
-        val uri = Uri.Builder().scheme("upi").authority("pay").appendQueryParameter("pa", vpa).appendQueryParameter("pn", risk?.name ?: qr?.get("pn") ?: vpa)
-            .appendQueryParameter("am", amount.toBigDecimalOrNull()?.setScale(2)?.toPlainString() ?: amount).appendQueryParameter("cu", "INR")
-            .appendQueryParameter("tn", qr?.get("tn") ?: "Checked with trace.pay").build()
-        try { launcher.launch(Intent(Intent.ACTION_VIEW, uri).setPackage(app.pkg)) }
-        catch (_: Exception) {
-            ctx.packageManager.getLaunchIntentForPackage(app.pkg)?.let { copy(ctx, vpa); launcher.launch(it) } ?: run { message = "Couldn't open ${app.label}." }
-        }
+        copy(ctx, vpa)
+        val intent = ctx.packageManager.getLaunchIntentForPackage(app.pkg)
+        if (intent != null) launcher.launch(intent) else message = "Couldn't open ${app.label}."
+    }
+    /** Secondary: a pre-filled link without an amount (some apps accept this; the amount is entered in the app). */
+    fun openPrefilled() {
+        val app = chosen ?: return
+        copy(ctx, vpa)
+        val uri = Uri.Builder().scheme("upi").authority("pay").appendQueryParameter("pa", vpa)
+            .appendQueryParameter("pn", risk?.name ?: qr?.get("pn") ?: vpa).appendQueryParameter("cu", "INR").build()
+        try { launcher.launch(Intent(Intent.ACTION_VIEW, uri).setPackage(app.pkg)) } catch (_: Exception) { openToPaste() }
     }
     finished?.let { s -> SuccessScreen(s == "SUCCESS", amount, qr?.get("pn") ?: vpa, chosen?.label ?: "UPI", null, if (s == "CANCELLED") "Not paid. Nothing was recorded as a payment." else null, onDone); return }
     ScreenColumn {
@@ -852,7 +898,17 @@ fun ExternalPayScreen(api: TraceApi, raw: String, onDone: () -> Unit) {
         Spacer(Modifier.height(12.dp)); ErrorLine(message)
         Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lock, null, tint = TP.muted, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)); TText("Your UPI PIN is only entered in your UPI app.", 12.5.sp, color = TP.muted) }
     }
-    risk?.let { r -> if (finished == null && !confirm) RiskSheet(r, "Pay ${rupees(amount)} with ${chosen?.label ?: "UPI"}", onPay = { launch() }, onCancel = { risk = null }, onReport = { report = true }) }
+    risk?.let { r -> if (finished == null && !confirm && !guide) RiskSheet(r, "Pay ${rupees(amount)} with ${chosen?.label ?: "UPI"}", onPay = { copy(ctx, vpa); guide = true }, onCancel = { risk = null }, onReport = { report = true }) }
+    if (guide) AlertDialog(onDismissRequest = { guide = false },
+        icon = { Icon(Icons.Default.ContentCopy, null, tint = TP.violet) },
+        title = { Text("UPI ID copied") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            TText(vpa, 17.sp, FontWeight.SemiBold, TP.ink, Modifier.clip(RoundedCornerShape(12.dp)).background(TP.canvas).padding(horizontal = 12.dp, vertical = 8.dp))
+            TText("In ${chosen?.label ?: "your UPI app"}, tap \"Pay UPI ID\" (or \"To UPI ID\"), paste, and pay ${rupees(amount)}. Then come back here.", 14.sp, color = TP.ink2, lineHeight = 20.sp)
+            TText("Try pre-filled link instead", 13.5.sp, FontWeight.Medium, TP.violet, Modifier.clickable { guide = false; openPrefilled() }.padding(vertical = 4.dp))
+        } },
+        confirmButton = { TextButton({ guide = false; openToPaste() }) { Text("Open ${chosen?.label ?: "app"}", fontWeight = FontWeight.SemiBold) } },
+        dismissButton = { TextButton({ guide = false }) { Text("Cancel") } })
     if (report) ReportSheet(api, vpa) { report = false; risk = null }
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Did the payment go through?") }, text = { Text("Some UPI apps don't report back. Confirm so trace.pay can save it.") },
         confirmButton = { TextButton({ confirm = false; record("SUCCESS", "manual", null) }) { Text("Yes, I paid") } },

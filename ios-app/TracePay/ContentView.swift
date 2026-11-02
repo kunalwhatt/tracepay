@@ -1879,7 +1879,7 @@ struct ExternalPayScreen: View {
     @Environment(\.scenePhase) private var scenePhase
     let raw: String
     let onDone: () -> Void
-    enum Prompt: Identifiable { case confirm, notInstalled; var id: Int { self == .confirm ? 0 : 1 } }
+    enum Prompt: Identifiable { case confirm, notInstalled, howTo; var id: Int { self == .confirm ? 0 : self == .notInstalled ? 1 : 2 } }
     private let apps: [UPIApp] = [
         UPIApp(id: "gpay", name: "Google Pay", schemes: ["gpay://upi/pay", "tez://upi/pay"], store: "https://apps.apple.com/in/app/google-pay/id1193357041", color: Color(hex: 0x1A73E8)),
         UPIApp(id: "phonepe", name: "PhonePe", schemes: ["phonepe://pay", "phonepe://upi/pay"], store: "https://apps.apple.com/in/app/phonepe/id1170055821", color: Color(hex: 0x5F259F)),
@@ -1920,6 +1920,10 @@ struct ExternalPayScreen: View {
             case .confirm:
                 return Alert(title: Text("Did the payment go through?"), message: Text("UPI apps on iPhone don't report back, so confirm to save it."),
                              primaryButton: .default(Text("Yes, I paid")) { record("SUCCESS") }, secondaryButton: .cancel(Text("No")) { record("CANCELLED") })
+            case .howTo:
+                return Alert(title: Text("UPI ID copied"),
+                             message: Text("\(qr?["pa"] ?? "")\n\nIn \(chosen?.name ?? "your UPI app"), tap \"Pay UPI ID\" (or \"To UPI ID\"), paste, and pay ₹\(amount). Then come back here."),
+                             primaryButton: .default(Text("Open \(chosen?.name ?? "app")")) { openToPaste() }, secondaryButton: .cancel())
             case .notInstalled:
                 return Alert(title: Text("Couldn't open \(chosen?.name ?? "the app")"), message: Text("The UPI ID is copied. Paste it in any UPI app, or install this one."),
                              primaryButton: .default(Text("Get \(chosen?.name ?? "app")")) { if let s = chosen?.store, let u = URL(string: s) { UIApplication.shared.open(u) } },
@@ -1993,7 +1997,9 @@ struct ExternalPayScreen: View {
     private func runPending() {
         let action = pending; pending = nil
         switch action {
-        case .pay: launch()
+        case .pay:
+            UIPasteboard.general.string = qr?["pa"]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { prompt = .howTo }
         case .report: report = TextRoute(value: qr?["pa"] ?? raw)
         case .none: break
         }
@@ -2012,6 +2018,15 @@ struct ExternalPayScreen: View {
         let roots: [URL] = app.schemes.compactMap { s in s.components(separatedBy: "://").first.flatMap { URL(string: $0 + "://") } }
         UIPasteboard.general.string = qr["pa"]
         tryOpen(urls + roots, index: 0)
+    }
+
+    /// Recommended: open the UPI app's home screen with the UPI ID on the clipboard, so the payment starts inside the app
+    /// as "pay to UPI ID" (UPI apps restrict or decline ready-made payment links sent by other apps).
+    private func openToPaste() {
+        guard let qr, let app = chosen else { return }
+        UIPasteboard.general.string = qr["pa"]
+        let roots: [URL] = app.schemes.compactMap { s in s.components(separatedBy: "://").first.flatMap { URL(string: $0 + "://") } }
+        tryOpen(roots, index: 0)
     }
 
     private func tryOpen(_ urls: [URL], index: Int) {
