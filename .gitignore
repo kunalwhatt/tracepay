@@ -14,3 +14,4 @@ xcuserdata/
 *.jks
 *.keystore
 keystore-password.txt
+android-app/local.properties
