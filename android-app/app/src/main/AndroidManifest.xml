@@ -10,6 +10,21 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="upi" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="upi" android:host="pay" />
+        </intent>
+        <!-- Common UPI apps, named so Android lets trace.pay see and open them. -->
+        <package android:name="com.google.android.apps.nbu.paisa.user" />
+        <package android:name="com.phonepe.app" />
+        <package android:name="net.one97.paytm" />
+        <package android:name="in.org.npci.upiapp" />
+        <package android:name="com.dreamplug.androidapp" />
+        <package android:name="in.amazon.mShop.android.shopping" />
+        <package android:name="com.mobikwik_new" />
+        <package android:name="com.naviapp" />
+        <package android:name="com.flipkart.supermoney" />
     </queries>
     <application android:theme="@style/Theme.TracePay" android:label="trace.pay" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="${usesCleartextTraffic}">
         <activity android:name=".MainActivity" android:exported="true">

@@ -816,6 +816,23 @@ fun SuccessScreen(ok: Boolean, amount: String, to: String, via: String, referenc
 // ---------------------------------------------------------------------------------------------
 data class UpiApp(val pkg: String, val label: String, val icon: Drawable?)
 
+/** Known UPI apps (shown in this order when installed). */
+val KNOWN_UPI_APPS = listOf("com.google.android.apps.nbu.paisa.user", "com.phonepe.app", "net.one97.paytm", "in.org.npci.upiapp", "com.dreamplug.androidapp",
+    "in.amazon.mShop.android.shopping", "com.mobikwik_new", "com.naviapp", "com.flipkart.supermoney")
+
+/** Every UPI app on this phone: apps that handle upi:// links plus known UPI apps that are installed, with their real names and icons. */
+fun installedUpiApps(ctx: Context): List<UpiApp> {
+    val pm = ctx.packageManager
+    val byLink = runCatching {
+        pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse("upi://pay?pa=a@b")), android.content.pm.PackageManager.MATCH_ALL)
+            .map { it.activityInfo.packageName }
+    }.getOrDefault(emptyList())
+    val known = KNOWN_UPI_APPS.filter { pkg -> pm.getLaunchIntentForPackage(pkg) != null }
+    return (known + byLink).distinct().filter { it != ctx.packageName }.mapNotNull { pkg ->
+        runCatching { val info = pm.getApplicationInfo(pkg, 0); UpiApp(pkg, pm.getApplicationLabel(info).toString(), pm.getApplicationIcon(info)) }.getOrNull()
+    }
+}
+
 /** The installed app's own icon, as provided by Android. */
 fun drawableBitmap(d: Drawable, size: Int = 96): android.graphics.Bitmap {
     val b = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
@@ -827,10 +844,7 @@ fun ExternalPayScreen(api: TraceApi, raw: String, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val qr = remember(raw) { parseUpiQr(raw) }
-    val apps = remember {
-        val pm = ctx.packageManager
-        pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse("upi://pay")), 0).map { UpiApp(it.activityInfo.packageName, it.loadLabel(pm).toString(), it.loadIcon(pm)) }.distinctBy { it.pkg }
-    }
+    val apps = remember { installedUpiApps(ctx) }
     var amount by remember { mutableStateOf(qr?.get("am") ?: "") }
     var chosen by remember { mutableStateOf<UpiApp?>(null) }
     var risk by remember { mutableStateOf<RiskReport?>(null) }
