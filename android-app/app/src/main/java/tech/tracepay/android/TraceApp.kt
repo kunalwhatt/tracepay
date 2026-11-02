@@ -28,6 +28,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -187,7 +189,7 @@ enum class Stage { Loading, Unlock, Auth, Setup, Main }
 
 @Composable
 fun TraceApp(activity: MainActivity) {
-    val api = remember { TraceApi(activity) }
+    val api = remember { TraceApi(activity).also { CurrentApi.api = it } }
     val scope = rememberCoroutineScope()
     var stage by remember { mutableStateOf(if (Vault.has(activity)) Stage.Unlock else if (api.token != null) Stage.Loading else Stage.Auth) }
     var profile by remember { mutableStateOf<Profile?>(null) }
@@ -319,6 +321,8 @@ fun SignInScreen(api: TraceApi, onBack: () -> Unit, onSignedIn: () -> Unit) {
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
+    var forgot by remember { mutableStateOf(false) }
+    if (forgot) { ForgotPasswordScreen(api) { forgot = false }; return }
     ScreenColumn(bottom = {
         NeoButton("Sign in", busy = busy, enabled = password.isNotEmpty()) {
             val id = if (method == 0) mobile.filter(Char::isDigit) else email
@@ -337,6 +341,7 @@ fun SignInScreen(api: TraceApi, onBack: () -> Unit, onSignedIn: () -> Unit) {
         else TField(email, { email = it.trim() }, "Email", Icons.Default.Email, keyboard = KeyboardType.Email)
         Spacer(Modifier.height(12.dp))
         TField(password, { password = it }, "Password", Icons.Default.Lock, secure = true)
+        TText("Forgot password?", 14.5.sp, FontWeight.Medium, TP.violet, Modifier.fillMaxWidth().clickable { forgot = true }.padding(top = 12.dp), TextAlign.End)
         Spacer(Modifier.height(12.dp)); ErrorLine(message)
     }
 }
@@ -347,67 +352,163 @@ fun SignUpScreen(api: TraceApi, onBack: () -> Unit, onSignedIn: () -> Unit) {
     val scope = rememberCoroutineScope()
     var step by remember { mutableIntStateOf(1) }
     var name by remember { mutableStateOf("") }
-    var method by remember { mutableIntStateOf(0) }
     var mobile by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
+    var smsCode by remember { mutableStateOf("") }
+    var emailCode by remember { mutableStateOf("") }
+    var smsTicket by remember { mutableStateOf("") }
+    var emailTicket by remember { mutableStateOf("") }
+    var resendIn by remember { mutableIntStateOf(0) }
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    val rules = listOf("12+ characters" to (password.length >= 12), "Uppercase letter" to password.any(Char::isUpperCase),
+    LaunchedEffect(resendIn) { if (resendIn > 0) { delay(1000); resendIn -= 1 } }
+    val rules = listOf("8+ characters" to (password.length >= 8), "Uppercase letter" to password.any(Char::isUpperCase),
         "A number" to password.any(Char::isDigit), "A symbol" to password.any { !it.isLetterOrDigit() })
     val strength = rules.count { it.second }
-    val stepOneOk = name.trim().length >= 2 && (if (method == 0) mobile.length == 10 else email.contains("@") && email.contains("."))
-    val stepTwoOk = strength == 4 && password == confirm
-    ScreenColumn(bottom = {
-        NeoButton(if (step == 1) "Continue" else "Create account", icon = Icons.Default.ArrowForward, busy = busy, enabled = if (step == 1) stepOneOk else stepTwoOk) {
+    val detailsOk = name.trim().length >= 2 && mobile.length == 10 && email.contains("@") && email.contains(".")
+    val verified = smsTicket.isNotEmpty() && emailTicket.isNotEmpty()
+    val passwordOk = strength == 4 && password == confirm
+    fun sendCodes(then: () -> Unit = {}) {
+        busy = true; message = ""
+        scope.launch {
+            try { api.startVerification("sms", mobile, name); api.startVerification("email", email, name); resendIn = 30; then() }
+            catch (e: Exception) { message = e.message ?: "Couldn't send the codes" }
+            busy = false
+        }
+    }
+    fun check(channel: String, code: String) {
+        scope.launch {
             message = ""
-            if (step == 1) { step = 2; return@NeoButton }
-            busy = true
-            ctx.getSharedPreferences("tracepay_settings", 0).edit().putString("pendingName", name.trim()).apply()
-            scope.launch {
-                try { api.signUp(if (method == 1) email else null, if (method == 0) mobile else null, password); onSignedIn() }
-                catch (e: Exception) { message = e.message ?: "Couldn't create the account" }
-                busy = false
+            try { val t = api.checkVerification(channel, if (channel == "sms") mobile else email, code); if (channel == "sms") smsTicket = t else emailTicket = t }
+            catch (e: Exception) { message = e.message ?: "That code is wrong"; if (channel == "sms") smsCode = "" else emailCode = "" }
+        }
+    }
+    val titles = listOf(Triple("Create account", "Let's set you up", "Your name, mobile number and email. We'll verify both."),
+        Triple("Verify", "Enter your codes", "We sent a code to +91 $mobile and another to $email."),
+        Triple("Security", "Create a password", "You'll use it to sign in on a new phone."))
+    ScreenColumn(bottom = {
+        NeoButton(when (step) { 1 -> "Send codes"; 2 -> "Continue"; else -> "Create account" }, icon = Icons.Default.ArrowForward, busy = busy,
+            enabled = when (step) { 1 -> detailsOk; 2 -> verified; else -> passwordOk }) {
+            message = ""
+            when (step) {
+                1 -> sendCodes { step = 2 }
+                2 -> step = 3
+                else -> {
+                    busy = true
+                    ctx.getSharedPreferences("tracepay_settings", 0).edit().putString("pendingName", name.trim()).apply()
+                    scope.launch { try { api.signUpVerified(email, mobile, password, emailTicket, smsTicket); onSignedIn() } catch (e: Exception) { message = e.message ?: "Couldn't create the account" }; busy = false }
+                }
             }
         }
     }) {
-        TopBack(onBack = { if (step == 1) onBack() else step = 1 }, trailing = "Step $step of 2")
-        Spacer(Modifier.height(20.dp)); ProgressSteps(step, 2)
-        Caption(if (step == 1) "Create account" else "Security", Modifier.padding(top = 24.dp))
-        TText(if (step == 1) "Let's set you up" else "Create a password", 32.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-        TText(if (step == 1) "Sign up with your mobile number or email." else "You'll use it to sign in on a new phone.", 15.sp, color = TP.muted, modifier = Modifier.padding(top = 6.dp, bottom = 24.dp))
-        if (step == 1) {
-            Segment(listOf(Icons.Default.PhoneAndroid to "Mobile", Icons.Default.Email to "Email"), method) { method = it }
-            Spacer(Modifier.height(16.dp))
-            TField(name, { name = it }, "Full name", Icons.Default.Person); Spacer(Modifier.height(12.dp))
-            if (method == 0) TField(mobile, { mobile = it.filter(Char::isDigit).take(10) }, "10-digit mobile number", prefix = "+91", keyboard = KeyboardType.Phone)
-            else TField(email, { email = it.trim() }, "Email", Icons.Default.Email, keyboard = KeyboardType.Email)
-            TText("By continuing you agree to the Terms and Privacy Policy.", 12.5.sp, color = TP.muted, modifier = Modifier.padding(top = 14.dp))
-        } else {
-            TField(password, { password = it }, "Password", Icons.Default.Lock, secure = true)
-            Spacer(Modifier.height(12.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                val col = listOf(TP.bad, TP.warn, TP.violetLight, TP.good)[maxOf(0, strength - 1)]
-                repeat(4) { i -> Box(Modifier.weight(1f).height(5.dp).clip(CircleShape).background(if (i < strength) col else TP.hair)) }
+        TopBack(onBack = { if (step == 1) onBack() else step -= 1 }, trailing = "Step $step of 3")
+        Spacer(Modifier.height(20.dp)); ProgressSteps(step, 3)
+        Caption(titles[step - 1].first, Modifier.padding(top = 24.dp))
+        TText(titles[step - 1].second, 32.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+        TText(titles[step - 1].third, 15.sp, color = TP.muted, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp), lineHeight = 21.sp)
+        when (step) {
+            1 -> {
+                TField(name, { name = it }, "Full name", Icons.Default.Person); Spacer(Modifier.height(12.dp))
+                TField(mobile, { mobile = it.filter(Char::isDigit).take(10) }, "10-digit mobile number", prefix = "+91", keyboard = KeyboardType.Phone); Spacer(Modifier.height(12.dp))
+                TField(email, { email = it.trim() }, "Email", Icons.Default.Email, keyboard = KeyboardType.Email)
+                TText("By continuing you agree to the Terms and Privacy Policy.", 12.5.sp, color = TP.muted, modifier = Modifier.padding(top = 14.dp))
             }
-            Spacer(Modifier.height(12.dp))
-            rules.chunked(2).forEach { pair ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                    pair.forEach { (t, ok) ->
-                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(if (ok) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked, null, tint = if (ok) TP.good else TP.faint, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp)); TText(t, 13.sp, color = if (ok) TP.good else TP.faint)
+            2 -> {
+                CodeBlock(Icons.Default.Sms, "SMS code", "+91 $mobile", smsCode, smsTicket.isNotEmpty()) { smsCode = it; if (it.length == 6) check("sms", it) }
+                Spacer(Modifier.height(22.dp))
+                CodeBlock(Icons.Default.Email, "Email code", email, emailCode, emailTicket.isNotEmpty()) { emailCode = it; if (it.length == 6) check("email", it) }
+                TText(if (resendIn > 0) "Resend codes in ${resendIn}s" else "Resend codes", 14.5.sp, FontWeight.Medium, if (resendIn > 0) TP.faint else TP.violet,
+                    Modifier.fillMaxWidth().clickable(enabled = resendIn == 0 && !busy) { sendCodes() }.padding(top = 18.dp, bottom = 8.dp), TextAlign.Center)
+            }
+            else -> {
+                TField(password, { password = it }, "Password", Icons.Default.Lock, secure = true)
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val col = listOf(TP.bad, TP.warn, TP.violetLight, TP.good)[maxOf(0, strength - 1)]
+                    repeat(4) { i -> Box(Modifier.weight(1f).height(5.dp).clip(CircleShape).background(if (i < strength) col else TP.hair)) }
+                }
+                Spacer(Modifier.height(12.dp))
+                rules.chunked(2).forEach { pair ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                        pair.forEach { (t, ok) ->
+                            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(if (ok) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked, null, tint = if (ok) TP.good else TP.faint, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp)); TText(t, 13.sp, color = if (ok) TP.good else TP.faint)
+                            }
                         }
                     }
                 }
+                Spacer(Modifier.height(12.dp))
+                TField(confirm, { confirm = it }, "Confirm password", Icons.Default.Lock, secure = true)
             }
-            Spacer(Modifier.height(12.dp))
-            TField(confirm, { confirm = it }, "Confirm password", Icons.Default.Lock, secure = true)
         }
         Spacer(Modifier.height(12.dp)); ErrorLine(message)
     }
 }
+
+@Composable
+fun CodeBlock(icon: ImageVector, title: String, sub: String, code: String, done: Boolean, onChange: (String) -> Unit) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconSquare(if (done) Icons.Default.Verified else icon, if (done) TP.good else TP.violet, if (done) TP.goodBg else TP.violetSoft, 36.dp)
+            Spacer(Modifier.width(10.dp))
+            Column { TText(if (done) "$title verified" else title, 15.sp, FontWeight.SemiBold, if (done) TP.good else TP.ink); TText(sub, 12.5.sp, color = TP.muted) }
+        }
+        if (!done) { Spacer(Modifier.height(10.dp)); CodeBoxes(code, onChange) }
+    }
+}
+
+@Composable
+fun ForgotPasswordScreen(api: TraceApi, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var method by remember { mutableIntStateOf(0) }
+    var mobile by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var sent by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    var done by remember { mutableStateOf(false) }
+    val identifier = if (method == 0) mobile else email.trim().lowercase()
+    val strong = password.length >= 8 && password.any(Char::isUpperCase) && password.any(Char::isDigit) && password.any { !it.isLetterOrDigit() }
+    fun send() { busy = true; message = ""; scope.launch { try { api.forgotPassword(identifier); sent = true } catch (e: Exception) { message = e.message ?: "Couldn't send the code" }; busy = false } }
+    ScreenColumn(bottom = {
+        when {
+            done -> NeoButton("Back to sign in") { onBack() }
+            !sent -> NeoButton("Send code", busy = busy, enabled = identifier.length >= 5) { send() }
+            else -> NeoButton("Update password", busy = busy, enabled = code.length == 6 && strong && password == confirm) {
+                busy = true; message = ""
+                scope.launch { try { api.resetPassword(identifier, code, password); done = true } catch (e: Exception) { message = e.message ?: "Couldn't reset the password" }; busy = false }
+            }
+        }
+    }) {
+        TopBack(onBack)
+        Box(Modifier.padding(top = 22.dp).size(58.dp).clip(RoundedCornerShape(18.dp)).background(if (done) TP.goodBg else TP.violetSoft), contentAlignment = Alignment.Center) {
+            Icon(if (done) Icons.Default.Verified else Icons.Default.Key, null, tint = if (done) TP.good else TP.violet, modifier = Modifier.size(26.dp))
+        }
+        TText(if (done) "Password updated" else if (sent) "Reset your password" else "Forgot password?", 28.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 16.dp))
+        TText(if (done) "Sign in with your new password." else if (sent) "Enter the code we sent to ${if (method == 0) "+91 $identifier" else identifier}, then choose a new password."
+              else "We'll send a code to your mobile number or email.", 15.sp, color = TP.muted, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp), lineHeight = 21.sp)
+        if (!done && !sent) {
+            Segment(listOf(Icons.Default.PhoneAndroid to "Mobile", Icons.Default.Email to "Email"), method) { method = it }
+            Spacer(Modifier.height(14.dp))
+            if (method == 0) TField(mobile, { mobile = it.filter(Char::isDigit).take(10) }, "10-digit mobile number", prefix = "+91", keyboard = KeyboardType.Phone)
+            else TField(email, { email = it.trim() }, "Email", Icons.Default.Email, keyboard = KeyboardType.Email)
+        } else if (!done) {
+            CodeBoxes(code) { code = it }; Spacer(Modifier.height(14.dp))
+            TField(password, { password = it }, "New password (8+ characters)", Icons.Default.Lock, secure = true); Spacer(Modifier.height(12.dp))
+            TField(confirm, { confirm = it }, "Confirm new password", Icons.Default.Lock, secure = true)
+            TText("Use 8+ characters with an uppercase letter, a number and a symbol.", 12.5.sp, color = if (strong) TP.good else TP.muted, modifier = Modifier.padding(top = 10.dp))
+            TText("Send a new code", 14.5.sp, FontWeight.Medium, TP.violet, Modifier.fillMaxWidth().clickable { send() }.padding(top = 14.dp), TextAlign.Center)
+        }
+        Spacer(Modifier.height(12.dp)); ErrorLine(message)
+    }
+}
+
 
 // ---------------------------------------------------------------------------------------------
 // Profile setup: about you → live selfie → device lock → verify email (email accounts only)
@@ -418,7 +519,8 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember { ctx.getSharedPreferences("tracepay_settings", 0) }
-    val needsEmail = api.identifier.contains("@") && !api.identifier.endsWith("@mobile.tracepay.app")
+    // Email and mobile are verified during sign-up now; older unverified accounts verify from the Home banner.
+    val needsEmail = false
     val total = if (needsEmail) 4 else 3
     var step by remember { mutableIntStateOf(1) }
     var name by remember { mutableStateOf(settings.getString("pendingName", "") ?: "") }
@@ -494,19 +596,38 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
                 }
             }
             2 -> {
-                Box(Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(26.dp)).background(Brush.verticalGradient(listOf(Color(0xFF3C2A7A), Color(0xFF110828)))), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().height(290.dp).clip(RoundedCornerShape(28.dp)).background(Brush.verticalGradient(listOf(TP.violetSoft, Color.White)))
+                    .border(1.dp, TP.hair, RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) {
                     val p = photo
                     if (p != null) {
                         val bmp = remember(p) { android.graphics.BitmapFactory.decodeFile(p.absolutePath) }
-                        if (bmp != null) Image(bmp.asImageBitmap(), "Your selfie", Modifier.size(190.dp, 240.dp).clip(RoundedCornerShape(100.dp)).border(3.dp, TP.lime, RoundedCornerShape(100.dp)),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            if (bmp != null) Image(bmp.asImageBitmap(), "Your selfie", Modifier.size(170.dp, 214.dp).clip(RoundedCornerShape(100.dp)).border(4.dp, TP.good, RoundedCornerShape(100.dp)),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                            TText("Clear face captured", 14.sp, FontWeight.SemiBold, TP.good, Modifier.padding(top = 12.dp).clip(CircleShape).background(TP.goodBg).padding(horizontal = 12.dp, vertical = 6.dp))
+                        }
                     } else {
-                        Box(Modifier.size(190.dp, 240.dp).border(3.dp, Color.White.copy(alpha = .5f), RoundedCornerShape(100.dp)), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Person, null, tint = Color.White.copy(alpha = .3f), modifier = Modifier.size(80.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(Modifier.size(150.dp, 190.dp).border(3.dp, TP.violet.copy(alpha = .35f), RoundedCornerShape(100.dp)), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Face, null, tint = TP.violet, modifier = Modifier.size(70.dp))
+                            }
+                            TText("Your face goes inside the oval", 14.sp, FontWeight.Medium, TP.ink2, Modifier.padding(top = 12.dp))
                         }
                     }
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
+                CardBox(padding = 16.dp) {
+                    listOf(Triple(Icons.Default.WbSunny, "Good light", "Face a window or a lamp; avoid strong light behind you."),
+                        Triple(Icons.Default.FaceRetouchingOff, "Nothing covering your face", "Take off sunglasses, masks and caps."),
+                        Triple(Icons.Default.PanTool, "Hold still", "The photo is taken automatically when your face is clear."),
+                        Triple(Icons.Default.Lock, "Private", "Encrypted, and only checked for one clear face.")).forEach { (ic, t, d) ->
+                        Row(Modifier.padding(vertical = 6.dp)) {
+                            IconSquare(ic, size = 32.dp); Spacer(Modifier.width(12.dp))
+                            Column { TText(t, 14.sp, FontWeight.SemiBold); TText(d, 12.5.sp, color = TP.muted, lineHeight = 17.sp) }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
                 NeoButton(if (photo == null) "Open camera" else "Retake selfie", kind = if (photo == null) NeoKind.Violet else NeoKind.White, icon = Icons.Default.CameraAlt) { camera = true }
             }
             3 -> {
@@ -538,15 +659,23 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
     }
 }
 
-/** Six code boxes over one hidden number field. */
+/** Six polished code boxes over one hidden number field: auto-fills, supports paste, animates as digits arrive. */
 @Composable
 fun CodeBoxes(code: String, onChange: (String) -> Unit) {
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     BasicTextField(code, { onChange(it.filter(Char::isDigit).take(6)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+        modifier = Modifier.focusRequester(focus),
         decorationBox = {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 repeat(6) { i ->
-                    Box(Modifier.weight(1f).height(62.dp).clip(RoundedCornerShape(14.dp)).background(TP.canvas)
-                        .border(1.5.dp, if (i == code.length) TP.violet else Color.Transparent, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
+                    val filled = i < code.length; val active = i == code.length
+                    val scale by androidx.compose.animation.core.animateFloatAsState(if (filled) 1f else 0.96f, label = "otp")
+                    Box(Modifier.weight(1f).height(64.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+                        .shadow(if (filled) 3.dp else 0.dp, RoundedCornerShape(16.dp)).clip(RoundedCornerShape(16.dp))
+                        .background(if (filled) Color.White else TP.canvas)
+                        .border(if (active) 2.dp else 1.dp, if (active) TP.violet else if (filled) TP.hair else Color.Transparent, RoundedCornerShape(16.dp)),
+                        contentAlignment = Alignment.Center) {
                         TText(code.getOrNull(i)?.toString() ?: "", 28.sp, FontWeight.SemiBold)
                     }
                 }

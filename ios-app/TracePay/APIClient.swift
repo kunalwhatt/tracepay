@@ -558,7 +558,7 @@ enum UPIQR {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         var fields: [String: String] = [:]
         if text.lowercased().hasPrefix("upi://"), let items = URLComponents(string: text)?.queryItems {
-            for item in items { if let v = item.value, !v.isEmpty { fields[item.name.lowercased()] = v } }
+            for item in items { if let v = item.value, !v.isEmpty { fields[item.name.lowercased()] = v.replacingOccurrences(of: "+", with: " ") } }
         } else { fields["pa"] = text }
         guard let pa = fields["pa"]?.lowercased(),
               pa.range(of: #"^[a-z0-9][a-z0-9._-]{1,63}@[a-z][a-z0-9.]{1,40}$"#, options: .regularExpression) != nil else { return nil }
@@ -569,7 +569,18 @@ enum UPIQR {
 
 struct ExternalPaymentItem: Decodable, Identifiable, Hashable {
     let id: Int; let payee_vpa: String; let payee_name: String?; let amount: String; let app: String
-    let status: String; let source: String; let risk_score: Int?; let risk_band: String?; let created_at: String
+    let status: String; let source: String; let risk_score: Int?; let risk_band: String?; let created_at: String; let paid_at: String?; let upi_txn_id: String?
+    private enum K: String, CodingKey { case id, payee_vpa, payee_name, amount, app, status, source, risk_score, risk_band, created_at, paid_at, upi_txn_id }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        id = (try? c.decode(Int.self, forKey: .id)) ?? 0; payee_vpa = (try? c.decode(String.self, forKey: .payee_vpa)) ?? ""
+        payee_name = try? c.decode(String.self, forKey: .payee_name)
+        amount = (try? c.decode(String.self, forKey: .amount)) ?? ((try? c.decode(Double.self, forKey: .amount)).map { String($0) } ?? "0")
+        app = (try? c.decode(String.self, forKey: .app)) ?? "upi"; status = (try? c.decode(String.self, forKey: .status)) ?? "SUBMITTED"
+        source = (try? c.decode(String.self, forKey: .source)) ?? "manual"; risk_score = try? c.decode(Int.self, forKey: .risk_score)
+        risk_band = try? c.decode(String.self, forKey: .risk_band); created_at = (try? c.decode(String.self, forKey: .created_at)) ?? ""
+        paid_at = try? c.decode(String.self, forKey: .paid_at); upi_txn_id = try? c.decode(String.self, forKey: .upi_txn_id)
+    }
 }
 
 extension TracePaySession {
@@ -610,12 +621,7 @@ extension TracePaySession {
 enum CredentialVault {
     private static let service = "tech.tracepay.ios.vault"
     private static let account = "member"
-    static var hasCredential: Bool {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
-                                kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip]
-        let status = SecItemCopyMatching(q as CFDictionary, nil)
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
-    }
+    static var hasCredential: Bool { UserDefaults.standard.bool(forKey: "tp.vault.saved") }
     static func save(identifier: String, password: String) {
         guard let data = try? JSONEncoder().encode([identifier, password]) else { return }
         clear()
@@ -623,7 +629,7 @@ enum CredentialVault {
         guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .userPresence, &error) else { return }
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
                                 kSecValueData as String: data, kSecAttrAccessControl as String: access]
-        SecItemAdd(q as CFDictionary, nil)
+        if SecItemAdd(q as CFDictionary, nil) == errSecSuccess { UserDefaults.standard.set(true, forKey: "tp.vault.saved") }
     }
     /// Shows the system Face ID / Touch ID / passcode prompt. Returns nil if cancelled or nothing is stored.
     static func read(reason: String) async -> (identifier: String, password: String)? {
@@ -642,6 +648,7 @@ enum CredentialVault {
     static func clear() {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         SecItemDelete(q as CFDictionary)
+        UserDefaults.standard.set(false, forKey: "tp.vault.saved")
     }
 }
 
@@ -660,5 +667,52 @@ extension TracePaySession {
     func emailStatus() async throws -> EmailStatus {
         let none: [String: String]? = nil
         return try await send("/api/v1/auth/email/status", method: "GET", body: none, authenticated: true)
+    }
+}
+
+// MARK: - 6.1: sign-up verification, forgot password, scoring rules, receipts
+struct VerifyTicket: Decodable { let ticket: String }
+struct ScoringRule: Decodable, Identifiable { var id: String { code }; let code: String; let label: String; let rule: String; let family: String; let pointsText: String
+    private enum K: String, CodingKey { case code, label, rule, family, points }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        code = (try? c.decode(String.self, forKey: .code)) ?? ""; label = (try? c.decode(String.self, forKey: .label)) ?? ""
+        rule = (try? c.decode(String.self, forKey: .rule)) ?? ""; family = (try? c.decode(String.self, forKey: .family)) ?? ""
+        if let n = try? c.decode(Int.self, forKey: .points) { pointsText = n > 0 ? "+\(n)" : "\(n)" } else { pointsText = (try? c.decode(String.self, forKey: .points)) ?? "" }
+    }
+}
+struct ScoringBand: Decodable, Identifiable { var id: String { range }; let range: String; let label: String; let band: String; let meaning: String }
+struct ScoringModel: Decodable { let summary: String; let bands: [ScoringBand]; let signals: [ScoringRule]; let community: [ScoringRule]; let window: String }
+
+struct ReceiptBody: Encodable {
+    let payee: String; let payee_name: String?; let amount: String; let app: String; let status: String; let source: String
+    let upi_txn_id: String?; let risk_score: Int?; let risk_band: String?; let paid_at: String?; let payee_mobile: String?
+}
+
+extension TracePaySession {
+    func startVerification(channel: String, target: String, name: String) async throws {
+        let _: AnyDecodableIgnored = try await send("/api/v1/auth/verify/start", method: "POST", body: ["channel": channel, "target": target, "full_name": name], authenticated: false)
+    }
+    func checkVerification(channel: String, target: String, code: String) async throws -> String {
+        let r: VerifyTicket = try await send("/api/v1/auth/verify/check", method: "POST", body: ["channel": channel, "target": target, "code": code], authenticated: false)
+        return r.ticket
+    }
+    func signUpVerified(email: String, mobile: String, password: String, emailTicket: String, smsTicket: String) async throws {
+        let body = ["email": email.lowercased(), "mobile": mobile, "password": password, "email_ticket": emailTicket, "sms_ticket": smsTicket]
+        let _: AnyDecodableIgnored = try await send("/api/v1/auth/register", method: "POST", body: body, authenticated: false)
+        try await signIn(identifier: email, password: password)
+    }
+    func forgotPassword(identifier: String) async throws {
+        let _: AnyDecodableIgnored = try await send("/api/v1/auth/password/forgot", method: "POST", body: ["identifier": identifier], authenticated: false)
+    }
+    func resetPassword(identifier: String, code: String, newPassword: String) async throws {
+        let _: AnyDecodableIgnored = try await send("/api/v1/auth/password/reset", method: "POST", body: ["identifier": identifier, "code": code, "new_password": newPassword], authenticated: false)
+    }
+    func scoringModel() async throws -> ScoringModel {
+        let none: [String: String]? = nil
+        return try await send("/api/v1/scoring/model", method: "GET", body: none, authenticated: true)
+    }
+    func recordReceipt(_ body: ReceiptBody) async throws {
+        let _: ExternalPaymentRecord = try await send("/api/v1/external-payments", method: "POST", body: body, authenticated: true)
     }
 }

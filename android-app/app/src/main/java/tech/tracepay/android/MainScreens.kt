@@ -447,6 +447,7 @@ fun ScoreMeter(score: Int, band: String) {
 @Composable
 fun RiskReportView(r: RiskReport) {
     var shown by remember(r) { mutableIntStateOf(0) }
+    var rules by remember { mutableStateOf(false) }
     LaunchedEffect(r) { delay(600); for (i in r.factors.indices) { delay(100); shown = i + 1 } }
     val raises = r.factors.filter { it.points >= 0 }; val lowers = r.factors.filter { it.points < 0 }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -457,7 +458,12 @@ fun RiskReportView(r: RiskReport) {
             }
             TText(r.ref, 13.sp, color = TP.muted)
         }
-        ScoreMeter(r.score, r.band)
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            ScoreMeter(r.score, r.band)
+            Box(Modifier.align(Alignment.TopEnd).size(44.dp).clip(CircleShape).background(Color.White).border(1.dp, TP.hair, CircleShape).clickable { rules = true }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Info, "How the score works", tint = TP.violet)
+            }
+        }
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Risk.bg(r.band)).padding(16.dp)) {
             Icon(if (r.band == "low") Icons.Default.VerifiedUser else Icons.Default.Warning, null, tint = Risk.color(r.band)); Spacer(Modifier.width(12.dp))
             Column { TText(r.title, 16.sp, FontWeight.SemiBold, Risk.color(r.band)); TText(r.advice, 14.sp, color = TP.ink2, lineHeight = 19.sp) }
@@ -470,11 +476,16 @@ fun RiskReportView(r: RiskReport) {
             Fact(Icons.Default.Speed, "${(r.confidence * 100).toInt()}%", "Confidence", Modifier.weight(1f))
         }
         if (r.shield.isNotEmpty()) Section("For this payment") { r.shield.forEach { Row(Modifier.padding(vertical = 10.dp)) { Icon(Icons.Default.Warning, null, tint = TP.warn); Spacer(Modifier.width(10.dp)); TText(it, 14.sp, color = TP.ink2) } } }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TText("Why this score", 18.sp, FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            TText("How it's scored", 13.sp, FontWeight.Medium, TP.violet, Modifier.clickable { rules = true }.padding(6.dp))
+        }
         if (raises.isNotEmpty()) Section("What raises the risk") { raises.forEachIndexed { i, f -> if (i < shown) FactorRow(f) } }
         if (lowers.isNotEmpty()) Section("What lowers the risk") { lowers.forEachIndexed { i, f -> if (raises.size + i < shown) FactorRow(f) } }
         if (r.counterfactuals.isNotEmpty()) Section("How the score changes") { r.counterfactuals.forEach { Row(Modifier.padding(vertical = 10.dp)) { Icon(Icons.Default.Lightbulb, null, tint = TP.violet); Spacer(Modifier.width(10.dp)); TText(it, 14.sp, color = TP.ink2) } } }
         Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lock, null, tint = TP.muted, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)); TText("Advisory only. You decide whether to pay.", 12.5.sp, color = TP.muted) }
     }
+    if (rules) CurrentApi.api?.let { ScoringInfoSheet(it) { rules = false } }
 }
 @Composable private fun Fact(icon: ImageVector, value: String, label: String, modifier: Modifier) {
     Row(modifier.clip(RoundedCornerShape(16.dp)).background(TP.canvas).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -487,17 +498,67 @@ fun RiskReportView(r: RiskReport) {
 @Composable fun FactorRow(f: Factor) {
     val lowers = f.points < 0; val tint = if (lowers) TP.good else TP.bad
     val level = if (abs(f.points) >= 15) 3 else if (abs(f.points) >= 8) 2 else 1
-    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-        IconSquare(Risk.icon(f.code), tint, if (lowers) TP.goodBg else TP.badBg); Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            TText(f.label, 14.5.sp, FontWeight.Medium)
-            if (f.detail.isNotBlank()) TText(f.detail, 12.5.sp, color = TP.muted, lineHeight = 17.sp)
-            if (f.points != 0) Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                repeat(3) { i -> Box(Modifier.padding(end = 3.dp).size(14.dp, 4.dp).clip(RoundedCornerShape(1.dp)).background(if (i < level) tint else TP.hair)) }
-                TText(listOf("Low", "Medium", "High")[level - 1].uppercase() + " IMPACT", 10.5.sp, FontWeight.Medium, TP.faint, Modifier.padding(start = 4.dp))
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(tint), contentAlignment = Alignment.Center) { Icon(Risk.icon(f.code), null, tint = Color.White, modifier = Modifier.size(20.dp)) }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                TText(f.label, 15.sp, FontWeight.SemiBold)
+                if (f.points != 0) TText("${listOf("Low", "Medium", "High")[level - 1]} impact · ${if (lowers) "lowers" else "raises"} risk", 12.sp, color = tint)
             }
+            if (f.points != 0) TText("${if (f.points > 0) "+" else "−"}${abs(f.points)}", 16.sp, FontWeight.Bold, tint, Modifier.clip(CircleShape).background(tint.copy(alpha = .1f)).padding(horizontal = 10.dp, vertical = 5.dp))
         }
-        if (f.points != 0) TText("${if (f.points > 0) "+" else "−"}${abs(f.points)}", 15.sp, FontWeight.SemiBold, tint)
+        if (f.detail.isNotBlank()) TText(f.detail, 13.sp, color = TP.ink2, modifier = Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(TP.canvas).padding(10.dp), lineHeight = 18.sp)
+        if (f.points != 0) Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(5.dp).clip(CircleShape).background(TP.hair)) {
+            Box(Modifier.fillMaxWidth(minOf(1f, abs(f.points) / 25f)).fillMaxHeight().clip(CircleShape).background(tint))
+        }
+    }
+}
+
+/** "How the score works": the real rules, points and bands from the server. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ScoringInfoSheet(api: TraceApi, onDismiss: () -> Unit) {
+    var model by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var message by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { try { model = api.scoringModel() } catch (e: Exception) { message = e.message ?: "Couldn't load the scoring rules" } }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color.White, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Caption("TraceScore"); TText("How the score works", 28.sp, FontWeight.SemiBold)
+            val m = model
+            if (m == null) { if (message.isNotBlank()) ErrorLine(message) else CircularProgressIndicator(color = TP.violet) }
+            else {
+                TText(m.optString("summary"), 15.sp, color = TP.ink2, lineHeight = 21.sp)
+                CardBox(padding = 14.dp) {
+                    val bands = m.optJSONArray("bands") ?: org.json.JSONArray()
+                    for (i in 0 until bands.length()) { val b = bands.getJSONObject(i)
+                        Row(Modifier.padding(vertical = 8.dp)) {
+                            TText(b.optString("range"), 14.sp, FontWeight.Bold, Risk.color(b.optString("band")), Modifier.width(64.dp))
+                            Column { TText(b.optString("label"), 14.5.sp, FontWeight.SemiBold); TText(b.optString("meaning"), 12.5.sp, color = TP.muted) }
+                        }
+                        if (i < bands.length() - 1) HorizontalDivider(color = TP.hair)
+                    }
+                }
+                listOf("Payment behaviour" to "signals", "Reports and trust" to "community").forEach { (title, key) ->
+                    Caption(title)
+                    CardBox(padding = 14.dp) {
+                        val arr = m.optJSONArray(key) ?: org.json.JSONArray()
+                        for (i in 0 until arr.length()) { val r = arr.getJSONObject(i)
+                            val pts = r.opt("points"); val text = if (pts is Int) (if (pts > 0) "+$pts" else "$pts") else pts.toString()
+                            val lowers = text.startsWith("-")
+                            Row(Modifier.padding(vertical = 8.dp)) {
+                                IconSquare(Risk.icon(r.optString("code")), if (lowers) TP.good else TP.violet, if (lowers) TP.goodBg else TP.violetSoft, 34.dp); Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) { TText(r.optString("label"), 14.5.sp, FontWeight.SemiBold); TText(r.optString("rule"), 12.5.sp, color = TP.muted, lineHeight = 17.sp) }
+                                TText(text, 13.sp, FontWeight.Bold, if (lowers) TP.good else TP.bad, Modifier.padding(start = 8.dp))
+                            }
+                            if (i < arr.length() - 1) HorizontalDivider(color = TP.hair)
+                        }
+                    }
+                }
+                TText(m.optString("window"), 12.5.sp, color = TP.muted)
+            }
+            Spacer(Modifier.height(16.dp))
+        }
     }
 }
 
@@ -792,7 +853,7 @@ fun PayMemberScreen(api: TraceApi, activity: MainActivity, profile: Profile, tra
 }
 
 @Composable
-fun SuccessScreen(ok: Boolean, amount: String, to: String, via: String, reference: String?, failure: String?, onDone: () -> Unit) {
+fun SuccessScreen(ok: Boolean, amount: String, to: String, via: String, reference: String?, failure: String?, onDone: () -> Unit, details: List<Pair<String, String>> = emptyList()) {
     val ctx = LocalContext.current
     val pop = remember { Animatable(0.4f) }
     LaunchedEffect(Unit) { pop.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) }
@@ -804,9 +865,15 @@ fun SuccessScreen(ok: Boolean, amount: String, to: String, via: String, referenc
         TText(if (ok) "Paid to $to" else "Payment not completed", 15.sp, color = TP.muted, modifier = Modifier.padding(top = 26.dp))
         if (ok) TText(rupees(amount), 52.sp, FontWeight.SemiBold)
         TText(if (ok) "via $via · checked by trace.pay" else (failure?.ifBlank { null } ?: "No money moved. You can try again safely."), 13.sp, color = TP.muted, align = TextAlign.Center)
-        reference?.let { TText(it, 12.sp, color = TP.muted, modifier = Modifier.padding(top = 4.dp)) }
+        val rows = details + (reference?.let { listOf("Reference" to it) } ?: emptyList())
+        if (ok && rows.isNotEmpty()) CardBox(Modifier.padding(top = 18.dp), padding = 16.dp) {
+            rows.forEachIndexed { i, (k, v) ->
+                Row(Modifier.padding(vertical = 9.dp)) { TText(k, 13.5.sp, color = TP.muted, modifier = Modifier.weight(1f)); TText(v, 13.5.sp, FontWeight.Medium, align = TextAlign.End) }
+                if (i < rows.size - 1) HorizontalDivider(color = TP.hair)
+            }
+        } else reference?.let { TText(it, 12.sp, color = TP.muted, modifier = Modifier.padding(top = 4.dp)) }
         Spacer(Modifier.weight(1f))
-        if (ok) { NeoButton("Share receipt", kind = NeoKind.White, icon = Icons.Default.Share) { share(ctx, "trace.pay receipt: ${rupees(amount)} to $to via $via. Ref ${reference ?: "-"}") }; Spacer(Modifier.height(10.dp)) }
+        if (ok) { NeoButton("Share receipt", kind = NeoKind.White, icon = Icons.Default.Share) { share(ctx, (listOf("trace.pay receipt", "${rupees(amount)} to $to via $via") + details.map { "${it.first}: ${it.second}" } + listOfNotNull(reference?.let { "Reference: $it" })).joinToString("\n")) }; Spacer(Modifier.height(10.dp)) }
         NeoButton("Done") { onDone() }
     }
 }
@@ -824,8 +891,7 @@ val KNOWN_UPI_APPS = listOf("com.google.android.apps.nbu.paisa.user", "com.phone
 fun installedUpiApps(ctx: Context): List<UpiApp> {
     val pm = ctx.packageManager
     val byLink = runCatching {
-        pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse("upi://pay?pa=a@b")), android.content.pm.PackageManager.MATCH_ALL)
-            .map { it.activityInfo.packageName }
+        pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse("upi://pay?pa=a@b")), android.content.pm.PackageManager.MATCH_ALL).map { it.activityInfo.packageName }
     }.getOrDefault(emptyList())
     val known = KNOWN_UPI_APPS.filter { pkg -> pm.getLaunchIntentForPackage(pkg) != null }
     return (known + byLink).distinct().filter { it != ctx.packageName }.mapNotNull { pkg ->
@@ -839,95 +905,221 @@ fun drawableBitmap(d: Drawable, size: Int = 96): android.graphics.Bitmap {
     val c = android.graphics.Canvas(b); d.setBounds(0, 0, size, size); d.draw(c); return b
 }
 
+/** The payee's mobile number when the UPI ID starts with one (e.g. 8142180305@superyes). */
+fun mobileFromUpi(vpa: String): String? {
+    val head = vpa.substringBefore("@")
+    if (head.isEmpty() || !head.all(Char::isDigit) || head.length < 10) return null
+    val last = head.takeLast(10)
+    return if (last.first() in "6789") last else null
+}
+
+data class Receipt(val amount: String?, val utr: String?, val paidAt: java.time.LocalDateTime?, val success: Boolean?)
+
+/** Reads the payment screenshot on the phone (ML Kit) and pulls out amount, UPI reference, date/time and status. */
+object ReceiptReader {
+    suspend fun read(ctx: Context, uri: Uri): String = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+        try {
+            val image = com.google.mlkit.vision.common.InputImage.fromFilePath(ctx, uri)
+            com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS).process(image)
+                .addOnSuccessListener { if (cont.isActive) cont.resumeWith(Result.success(it.text)) }
+                .addOnFailureListener { if (cont.isActive) cont.resumeWith(Result.success("")) }
+        } catch (_: Exception) { if (cont.isActive) cont.resumeWith(Result.success("")) }
+    }
+    fun parse(text: String): Receipt {
+        val amount = Regex("(?:₹|rs\\.?|inr)\\s?([0-9][0-9,]*(?:\\.[0-9]{1,2})?)", RegexOption.IGNORE_CASE).find(text)?.groupValues?.get(1)?.replace(",", "")
+        val utr = Regex("(?:utr|upi\\s*(?:transaction\\s*)?(?:id|ref(?:erence)?(?:\\s*no\\.?)?)|transaction\\s*id|ref(?:erence)?\\s*(?:no|number)?)[^0-9]{0,24}([0-9]{12})", RegexOption.IGNORE_CASE)
+            .find(text)?.groupValues?.get(1) ?: Regex("\\b([0-9]{12})\\b").find(text)?.groupValues?.get(1)
+        val lower = text.lowercase()
+        val success = if (lower.contains("failed") || lower.contains("declined")) false else if (lower.contains("success") || lower.contains("paid") || lower.contains("completed")) true else null
+        return Receipt(amount, utr, findDate(text), success)
+    }
+    private fun findDate(text: String): java.time.LocalDateTime? {
+        val patterns = listOf("d MMM yyyy, h:mm a", "dd MMM yyyy, hh:mm a", "d MMM yyyy h:mm a", "d MMMM yyyy, h:mm a", "MMM d, yyyy h:mm a", "MMM d, yyyy, h:mm a",
+            "dd/MM/yyyy HH:mm", "dd/MM/yyyy, HH:mm", "dd-MM-yyyy HH:mm", "d MMM yyyy, HH:mm", "h:mm a, d MMM yyyy", "h:mm a on d MMM yyyy")
+        val candidates = Regex("([0-9]{1,2}[:.][0-9]{2}\\s?(?:[ap]m)?[^\\n]{0,4}(?:on\\s)?[0-9]{1,2}\\s[A-Za-z]{3,9}\\s[0-9]{4})|([0-9]{1,2}[ /-][A-Za-z0-9]{2,9}[ /-][0-9]{4},?\\s(?:at\\s)?[0-9]{1,2}[:.][0-9]{2}\\s?(?:[ap]m)?)|([A-Za-z]{3,9}\\s[0-9]{1,2},\\s[0-9]{4},?\\s(?:at\\s)?[0-9]{1,2}:[0-9]{2}\\s?(?:[ap]m)?)", RegexOption.IGNORE_CASE)
+            .findAll(text).map { it.value.replace(" at ", " ").replace('.', ':').replace(Regex("\\s+"), " ").trim() }.toList()
+        for (c in candidates) for (p in patterns) {
+            val f = java.time.format.DateTimeFormatterBuilder().parseCaseInsensitive().appendPattern(p).toFormatter(Locale.ENGLISH)
+            runCatching { return java.time.LocalDateTime.parse(c, f) }
+        }
+        return null
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExternalPayScreen(api: TraceApi, raw: String, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val qr = remember(raw) { parseUpiQr(raw) }
     val apps = remember { installedUpiApps(ctx) }
+    val vpa = qr?.get("pa") ?: ""
     var amount by remember { mutableStateOf(qr?.get("am") ?: "") }
+    var payeeMobile by remember { mutableStateOf(mobileFromUpi(vpa) ?: "") }
     var chosen by remember { mutableStateOf<UpiApp?>(null) }
     var risk by remember { mutableStateOf<RiskReport?>(null) }
     var report by remember { mutableStateOf(false) }
-    var confirm by remember { mutableStateOf(false) }
     var guide by remember { mutableStateOf(false) }
+    var receipt by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    var finished by remember { mutableStateOf<String?>(null) }
-    val vpa = qr?.get("pa") ?: ""
-    fun record(status: String, source: String, txn: String?) {
-        scope.launch {
-            try { api.recordExternal(vpa, risk?.name ?: qr?.get("pn"), amount, chosen?.label?.lowercase() ?: "upi", status, source, txn, risk?.score, risk?.band); finished = status }
-            catch (e: Exception) { message = e.message ?: "Couldn't save the payment" }
-        }
-    }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-        val resp = res.data?.getStringExtra("response") ?: res.data?.getStringExtra("Status")
-        val map = resp?.split("&")?.mapNotNull { p -> p.split("=", limit = 2).takeIf { it.size == 2 }?.let { it[0].lowercase() to it[1] } }?.toMap()
-        val status = map?.get("status")?.uppercase()
-        if (res.resultCode == Activity.RESULT_OK && status != null) record(if (status.startsWith("SUCCESS")) "SUCCESS" else if (status.startsWith("SUBMIT")) "SUBMITTED" else "FAILURE", "upi_response", map["txnid"] ?: map["txnref"])
-        else confirm = true
-    }
-    /** Recommended: copy the UPI ID and open the app normally, so the payment starts inside the UPI app as "pay to UPI ID"
-     *  (UPI apps restrict or decline ready-made payment links sent by other apps). */
-    fun openToPaste() {
+    var copied by remember { mutableStateOf("") }
+    var saved by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
+    var savedOk by remember { mutableStateOf(false) }
+    var savedRef by remember { mutableStateOf<String?>(null) }
+    val payeeName = risk?.name ?: qr?.get("pn") ?: vpa
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { receipt = true }
+    fun openApp(copyValue: String) {
         val app = chosen ?: return
-        copy(ctx, vpa)
+        copy(ctx, copyValue)
         val intent = ctx.packageManager.getLaunchIntentForPackage(app.pkg)
         if (intent != null) launcher.launch(intent) else message = "Couldn't open ${app.label}."
     }
-    /** Secondary: a pre-filled link without an amount (some apps accept this; the amount is entered in the app). */
-    fun openPrefilled() {
-        val app = chosen ?: return
-        copy(ctx, vpa)
-        val uri = Uri.Builder().scheme("upi").authority("pay").appendQueryParameter("pa", vpa)
-            .appendQueryParameter("pn", risk?.name ?: qr?.get("pn") ?: vpa).appendQueryParameter("cu", "INR").build()
-        try { launcher.launch(Intent(Intent.ACTION_VIEW, uri).setPackage(app.pkg)) } catch (_: Exception) { openToPaste() }
+    saved?.let { rows -> SuccessScreen(savedOk, amount, payeeName, chosen?.label ?: "UPI", savedRef, if (!savedOk) "Not paid. Nothing was recorded as a payment." else null, onDone, rows); return }
+    if (receipt) {
+        ReceiptScreen(amount, chosen?.label ?: "UPI", onCancel = { receipt = false }) { amt, utr, paidAt, status ->
+            scope.launch {
+                try {
+                    api.recordExternal(vpa, payeeName, amt, chosen?.label?.lowercase() ?: "upi", status, "manual", utr, risk?.score, risk?.band,
+                        paidAt?.atZone(java.time.ZoneId.systemDefault())?.toOffsetDateTime()?.toString(), payeeMobile.ifBlank { null })
+                    amount = amt; savedOk = status == "SUCCESS"; savedRef = utr
+                    saved = buildList {
+                        add("Amount" to rupees(amt)); add("Paid to" to payeeName); add("UPI ID" to vpa)
+                        if (payeeMobile.isNotBlank()) add("Mobile" to "+91 $payeeMobile")
+                        paidAt?.let { add("Date & time" to it.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy, h:mm a"))) }
+                        add("App" to (chosen?.label ?: "UPI"))
+                        risk?.let { add("Risk at payment" to "${it.score}% · ${Risk.label(it.band)}") }
+                    }
+                    receipt = false
+                } catch (e: Exception) { message = e.message ?: "Couldn't save the payment"; receipt = false }
+            }
+        }
+        return
     }
-    finished?.let { s -> SuccessScreen(s == "SUCCESS", amount, qr?.get("pn") ?: vpa, chosen?.label ?: "UPI", null, if (s == "CANCELLED") "Not paid. Nothing was recorded as a payment." else null, onDone); return }
     ScreenColumn {
         TopBack(onDone, close = true)
         if (qr == null) { TText("This QR has no valid UPI ID.", 15.sp, color = TP.bad, modifier = Modifier.padding(top = 20.dp)); return@ScreenColumn }
         Column(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            AvatarBox(qr["pn"] ?: vpa, 66.dp); TText(qr["pn"] ?: vpa, 24.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp), align = TextAlign.Center); TText(vpa, 13.5.sp, color = TP.muted)
-        }
-        Spacer(Modifier.height(18.dp))
-        TField(amount, { amount = it.filter { c -> c.isDigit() || c == '.' } }, "Amount", Icons.Default.CurrencyRupee, keyboard = KeyboardType.Decimal)
-        Caption("Pay with", Modifier.padding(top = 22.dp, bottom = 10.dp))
-        if (apps.isEmpty()) TText("No UPI apps found on this phone. Install Google Pay, PhonePe, Paytm or BHIM.", 14.sp, color = TP.muted)
-        CardBox(padding = 4.dp) {
-            apps.forEachIndexed { i, app ->
-                Row(Modifier.fillMaxWidth().clickable(enabled = !busy) {
-                    if ((amount.toDoubleOrNull() ?: 0.0) <= 0) { message = "Enter the amount first."; return@clickable }
-                    chosen = app; busy = true; message = ""
-                    scope.launch { try { risk = api.risk(raw, amount, qr["pn"] ?: "") } catch (e: Exception) { message = e.message ?: "Couldn't check this account" }; busy = false }
-                }.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    val bmp = remember(app.pkg) { runCatching { app.icon?.let { drawableBitmap(it) }?.asImageBitmap() }.getOrNull() }
-                    if (bmp != null) Image(bmp, null, Modifier.size(44.dp).clip(RoundedCornerShape(12.dp))) else IconSquare(Icons.Default.Apps)
-                    Spacer(Modifier.width(14.dp)); TText(app.label, 16.sp, FontWeight.Medium, modifier = Modifier.weight(1f))
-                    if (busy && chosen?.pkg == app.pkg) CircularProgressIndicator(color = TP.violet, strokeWidth = 2.dp, modifier = Modifier.size(20.dp)) else Icon(Icons.Default.ChevronRight, null, tint = TP.faint)
-                }
-                if (i < apps.size - 1) HorizontalDivider(Modifier.padding(start = 72.dp), color = TP.hair)
+            AvatarBox(payeeName, 70.dp)
+            TText(payeeName, 24.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp), align = TextAlign.Center)
+            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TText("@ $vpa", 12.5.sp, color = TP.ink2, modifier = Modifier.clip(CircleShape).background(TP.canvas).padding(horizontal = 10.dp, vertical = 6.dp))
+                if (payeeMobile.length == 10) TText("+91 $payeeMobile", 12.5.sp, color = TP.ink2, modifier = Modifier.clip(CircleShape).background(TP.canvas).padding(horizontal = 10.dp, vertical = 6.dp))
             }
         }
-        Spacer(Modifier.height(12.dp)); ErrorLine(message)
-        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lock, null, tint = TP.muted, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)); TText("Your UPI PIN is only entered in your UPI app.", 12.5.sp, color = TP.muted) }
+        Caption("Amount", Modifier.padding(top = 22.dp, bottom = 8.dp))
+        TField(amount, { amount = it.filter { c -> c.isDigit() || c == '.' } }, "0", Icons.Default.CurrencyRupee, keyboard = KeyboardType.Decimal)
+        Caption("Payee's mobile number", Modifier.padding(top = 18.dp, bottom = 8.dp))
+        TField(payeeMobile, { payeeMobile = it.filter(Char::isDigit).take(10) }, "10-digit mobile (to pay by phone number)", prefix = "+91", keyboard = KeyboardType.Phone)
+        TText(if (mobileFromUpi(vpa) != null) "Read from the UPI ID." else "Optional. With it, you can use \"Pay phone number\" in your UPI app.", 12.sp, color = TP.muted, modifier = Modifier.padding(top = 6.dp))
+        Caption("Pay with", Modifier.padding(top = 22.dp, bottom = 10.dp))
+        if (apps.isEmpty()) TText("No UPI apps found on this phone. Install Google Pay, PhonePe, Paytm or BHIM.", 14.sp, color = TP.muted)
+        apps.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                row.forEach { app ->
+                    val on = chosen?.pkg == app.pkg
+                    Column(Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(Color.White).border(if (on) 2.dp else 1.dp, if (on) TP.violet else TP.hair, RoundedCornerShape(22.dp))
+                        .clickable(enabled = !busy) {
+                            if ((amount.toDoubleOrNull() ?: 0.0) <= 0) { message = "Enter the amount first."; return@clickable }
+                            chosen = app; busy = true; message = ""
+                            scope.launch { try { risk = api.risk(raw, amount, qr["pn"] ?: "") } catch (e: Exception) { message = e.message ?: "Couldn't check this account" }; busy = false }
+                        }.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val bmp = remember(app.pkg) { runCatching { app.icon?.let { drawableBitmap(it) }?.asImageBitmap() }.getOrNull() }
+                            if (bmp != null) Image(bmp, null, Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))) else IconSquare(Icons.Default.Apps, size = 46.dp)
+                            Spacer(Modifier.weight(1f))
+                            if (busy && on) CircularProgressIndicator(color = TP.violet, strokeWidth = 2.dp, modifier = Modifier.size(18.dp)) else Icon(Icons.Default.NorthEast, null, tint = TP.faint)
+                        }
+                        Text(app.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TP.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 12.dp))
+                        TText("Installed", 12.sp, color = TP.good)
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        ErrorLine(message)
+        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lock, null, tint = TP.muted, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)); TText("trace.pay checks the account first. Your UPI PIN is only entered in your UPI app.", 12.5.sp, color = TP.muted) }
     }
-    risk?.let { r -> if (finished == null && !confirm && !guide) RiskSheet(r, "Pay ${rupees(amount)} with ${chosen?.label ?: "UPI"}", onPay = { copy(ctx, vpa); guide = true }, onCancel = { risk = null }, onReport = { report = true }) }
-    if (guide) AlertDialog(onDismissRequest = { guide = false },
-        icon = { Icon(Icons.Default.ContentCopy, null, tint = TP.violet) },
-        title = { Text("UPI ID copied") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TText(vpa, 17.sp, FontWeight.SemiBold, TP.ink, Modifier.clip(RoundedCornerShape(12.dp)).background(TP.canvas).padding(horizontal = 12.dp, vertical = 8.dp))
-            TText("In ${chosen?.label ?: "your UPI app"}, tap \"Pay UPI ID\" (or \"To UPI ID\"), paste, and pay ${rupees(amount)}. Then come back here.", 14.sp, color = TP.ink2, lineHeight = 20.sp)
-            TText("Try pre-filled link instead", 13.5.sp, FontWeight.Medium, TP.violet, Modifier.clickable { guide = false; openPrefilled() }.padding(vertical = 4.dp))
-        } },
-        confirmButton = { TextButton({ guide = false; openToPaste() }) { Text("Open ${chosen?.label ?: "app"}", fontWeight = FontWeight.SemiBold) } },
-        dismissButton = { TextButton({ guide = false }) { Text("Cancel") } })
+    risk?.let { r -> if (!guide) RiskSheet(r, "Pay ${rupees(amount)} with ${chosen?.label ?: "UPI"}", onPay = { guide = true }, onCancel = { risk = null }, onReport = { report = true }) }
     if (report) ReportSheet(api, vpa) { report = false; risk = null }
-    if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Did the payment go through?") }, text = { Text("Some UPI apps don't report back. Confirm so trace.pay can save it.") },
-        confirmButton = { TextButton({ confirm = false; record("SUCCESS", "manual", null) }) { Text("Yes, I paid") } },
-        dismissButton = { TextButton({ confirm = false; record("CANCELLED", "manual", null) }) { Text("No") } })
+    if (guide) ModalBottomSheet(onDismissRequest = { guide = false }, containerColor = Color.White, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        val byPhone = payeeMobile.length == 10
+        Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp).navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Caption("Pay in ${chosen?.label ?: "your UPI app"}"); TText("Three quick steps", 26.sp, FontWeight.SemiBold)
+            GuideStep("1", if (byPhone) "Copy the phone number" else "Copy the UPI ID", if (byPhone) "+91 $payeeMobile" else vpa) { copy(ctx, if (byPhone) payeeMobile else vpa); copied = if (byPhone) payeeMobile else vpa }
+            if (byPhone) GuideStep("·", "Or copy the UPI ID", vpa) { copy(ctx, vpa); copied = vpa }
+            GuideStep("2", "Open ${chosen?.label ?: "the app"} → ${if (byPhone) "\"Pay phone number\"" else "\"Pay UPI ID\""}", "Paste, then pay ${rupees(amount)} with your PIN.", null)
+            GuideStep("3", "Come back to trace.pay", "Add the payment screenshot and we'll save every detail.", null)
+            if (copied.isNotBlank()) TText("Copied $copied", 13.sp, FontWeight.Medium, TP.good)
+            NeoButton("Open ${chosen?.label ?: "app"}", icon = Icons.Default.NorthEast) { guide = false; risk = null; openApp(if (byPhone) payeeMobile else vpa) }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun GuideStep(n: String, title: String, sub: String, onCopy: (() -> Unit)?) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Color.White).border(1.dp, TP.hair, RoundedCornerShape(18.dp)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(32.dp).clip(CircleShape).background(if (n == "·") TP.canvas else TP.ink), contentAlignment = Alignment.Center) { TText(n, 15.sp, FontWeight.Bold, if (n == "·") TP.muted else Color.White) }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) { TText(title, 15.sp, FontWeight.SemiBold); TText(sub, 13.sp, color = TP.muted) }
+        if (onCopy != null) TText("Copy", 13.sp, FontWeight.SemiBold, TP.violet, Modifier.clip(CircleShape).background(TP.violetSoft).clickable { onCopy() }.padding(horizontal = 12.dp, vertical = 8.dp))
+    }
+}
+
+/** After paying in the UPI app: add the screenshot, read the details on the phone, confirm and save. */
+@Composable
+fun ReceiptScreen(amount: String, app: String, onCancel: () -> Unit, onSave: (String, String?, java.time.LocalDateTime?, String) -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var image by remember { mutableStateOf<Uri?>(null) }
+    var reading by remember { mutableStateOf(false) }
+    var amt by remember { mutableStateOf(amount) }
+    var utr by remember { mutableStateOf("") }
+    var paidAt by remember { mutableStateOf<java.time.LocalDateTime?>(java.time.LocalDateTime.now()) }
+    var success by remember { mutableStateOf(true) }
+    var note by remember { mutableStateOf("") }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            image = uri; reading = true
+            scope.launch {
+                val r = ReceiptReader.parse(ReceiptReader.read(ctx, uri))
+                r.amount?.let { amt = it }; r.utr?.let { utr = it }; r.paidAt?.let { paidAt = it }; r.success?.let { success = it }
+                note = listOfNotNull(r.amount?.let { "₹$it" }, r.utr?.let { "Ref $it" }, r.paidAt?.format(java.time.format.DateTimeFormatter.ofPattern("d MMM, h:mm a"))).joinToString(" · ")
+                    .ifBlank { "Couldn't read details. Fill them in below." }
+                reading = false
+            }
+        }
+    }
+    ScreenColumn(bottom = {
+        NeoButton("Save payment", icon = Icons.Default.Check, enabled = amt.toDoubleOrNull() != null) { onSave(amt, utr.ifBlank { null }, paidAt, if (success) "SUCCESS" else "FAILURE") }
+        Spacer(Modifier.height(10.dp))
+        NeoButton("I didn't pay", kind = NeoKind.White) { onSave(amt.ifBlank { "0" }, null, null, "CANCELLED") }
+    }) {
+        Caption("Payment receipt", Modifier.padding(top = 12.dp))
+        TText("Did the payment go through?", 26.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+        TText("Add the payment screenshot from $app. We'll read the amount, reference and time from it.", 14.5.sp, color = TP.muted, modifier = Modifier.padding(top = 6.dp, bottom = 18.dp), lineHeight = 20.sp)
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Color.White).border(1.dp, TP.hair, RoundedCornerShape(18.dp))
+            .clickable { picker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconSquare(if (image == null) Icons.Default.AddPhotoAlternate else Icons.Default.Image, size = 54.dp); Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                TText(if (image == null) "Choose the screenshot" else "Screenshot added", 15.sp, FontWeight.SemiBold)
+                TText(if (reading) "Reading the details…" else if (image == null) "From your gallery" else note, 12.5.sp, color = TP.muted)
+            }
+            if (reading) CircularProgressIndicator(color = TP.violet, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.height(14.dp))
+        TField(amt, { amt = it.filter { c -> c.isDigit() || c == '.' } }, "Amount", Icons.Default.CurrencyRupee, keyboard = KeyboardType.Decimal); Spacer(Modifier.height(12.dp))
+        TField(utr, { utr = it.filter(Char::isDigit).take(12) }, "UPI reference / UTR (12 digits)", Icons.Default.Tag, keyboard = KeyboardType.Number); Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(16.dp)).background(TP.canvas).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.CalendarMonth, null, tint = TP.faint); Spacer(Modifier.width(12.dp))
+            TText("Paid at", 16.sp, FontWeight.Medium, TP.muted, Modifier.weight(1f))
+            TText(paidAt?.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy, h:mm a")) ?: "—", 15.sp, FontWeight.Medium)
+        }
+        Spacer(Modifier.height(12.dp))
+        Segment(listOf(Icons.Default.CheckCircle to "Successful", Icons.Default.Cancel to "Failed"), if (success) 0 else 1) { success = it == 0 }
+        TText("Cancel", 14.5.sp, FontWeight.Medium, TP.muted, Modifier.fillMaxWidth().clickable { onCancel() }.padding(top = 16.dp), TextAlign.Center)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

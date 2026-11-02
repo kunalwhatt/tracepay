@@ -30,7 +30,7 @@ from .ids import normalize_tracepay_id, parse_upi
 from . import community
 from .models import ScamReport, ExternalPayment
 
-APP_VERSION = "6.0.0"
+APP_VERSION = "6.1.1"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
@@ -302,6 +302,9 @@ def startup():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(10)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_mobile ON users (mobile)",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile_verified BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE external_payments ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ",
+            "ALTER TABLE external_payments ADD COLUMN IF NOT EXISTS payee_mobile VARCHAR(10)",
         ):
             conn.execute(text(statement))
     Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos")).mkdir(parents=True, exist_ok=True)
@@ -320,20 +323,26 @@ def health(): return {"status": "ok", "service": "tracepay-api", "version": APP_
 
 @app.post("/api/v1/auth/register", response_model=UserOut, status_code=201)
 def register(body: RegisterIn, db: Session = Depends(get_db)):
-    """Create a member account with an email or a mobile number (no OTP)."""
+    """Create a member account. With Supabase configured, both email and mobile are required and must be verified first."""
+    verified_email = verified_mobile = False
+    if os.getenv("SUPABASE_URL") or os.getenv("TWOFACTOR_API_KEY") or os.getenv("MSG91_AUTH_KEY"):
+        if not body.email or not body.mobile: raise HTTPException(422, "Enter both your email and mobile number")
+        if _read_ticket(body.email_ticket, "email") != body.email.lower(): raise HTTPException(422, "Verify your email first")
+        if _read_ticket(body.sms_ticket, "sms") != body.mobile: raise HTTPException(422, "Verify your mobile number first")
+        verified_email = verified_mobile = True
     email = body.email.lower() if body.email else f"m{body.mobile}@mobile.tracepay.app"
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "An account with this email already exists")
     if body.mobile and db.scalar(select(User).where(User.mobile == body.mobile)):
         raise HTTPException(409, "An account with this mobile number already exists")
-    # Self-registration creates members only. Elevated roles are assigned by an administrator.
-    user = User(email=email, mobile=body.mobile, password_hash=hash_password(body.password), role="pilot_user")
+    user = User(email=email, mobile=body.mobile, password_hash=hash_password(body.password), role="pilot_user",
+                email_verified=verified_email, mobile_verified=verified_mobile)
     db.add(user)
     try: db.commit()
     except IntegrityError: db.rollback(); raise HTTPException(409, "Account already exists")
     db.refresh(user)
     db.add(AuditEvent(actor_user_id=user.id, action="auth.register", object_ref=str(user.id),
-                      detail=json.dumps({"method": "mobile" if body.mobile and not body.email else "email"}))); db.commit()
+                      detail=json.dumps({"email_verified": verified_email, "mobile_verified": verified_mobile}))); db.commit()
     return user
 
 @app.post("/api/v1/auth/login", response_model=TokenOut)
@@ -732,7 +741,7 @@ def admin_accounts(db: Session = Depends(get_db), user: User = Depends(require_r
         synthetic = u.email.endswith("@mobile.tracepay.app")
         out.append({"id": u.id, "email": None if synthetic else u.email, "mobile": getattr(u, "mobile", None), "role": u.role, "active": u.active,
                     "email_verified": None if synthetic else bool(getattr(u, "email_verified", False)),
-                    "name": p.full_name if p else None, "vpa_id": vpa, "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
+                    "name": reveal_pii(p.full_name) if p else None, "vpa_id": vpa, "mobile_verified": bool(getattr(u, "mobile_verified", False)), "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
                     "transfers": db.scalar(select(func.count(PilotTransfer.id)).where(or_(PilotTransfer.sender_vpa == vpa, PilotTransfer.receiver_vpa == vpa))) if vpa else 0,
                     "external_payments": db.scalar(select(func.count(ExternalPayment.id)).where(ExternalPayment.user_id == u.id)) or 0,
                     "logs": db.scalar(select(func.count(AuditEvent.id)).where(AuditEvent.actor_user_id == u.id)) or 0})
@@ -791,7 +800,7 @@ async def admin_erase_account(user_id: int, body: EraseIn, db: Session = Depends
     target = db.get(User, user_id)
     if not target: raise HTTPException(404, "Account not found")
     if target.id == admin.id: raise HTTPException(409, "You can't erase your own account")
-    if "account" in scopes and target.role != "pilot_user": raise HTTPException(409, "Only member accounts can be deleted here")
+    if "account" in scopes and target.role == "admin": raise HTTPException(409, "Admin accounts can't be deleted here")
     if "account" in scopes: scopes |= ERASE_SCOPES
     if "profile" in scopes: scopes.add("transactions")
     profile = db.scalar(select(PilotProfile).where(PilotProfile.user_id == user_id))
@@ -847,7 +856,7 @@ def admin_erase_logs(body: EraseLogsIn, db: Session = Depends(get_db), admin: Us
 # Email verification with a one-time code, sent and checked by Supabase Auth
 # Env: SUPABASE_URL (https://<ref>.supabase.co) and SUPABASE_ANON_KEY. Keys stay on the server.
 # ------------------------------------------------------------------------------------------
-import urllib.request, urllib.error
+import urllib.request, urllib.error, urllib.parse
 
 
 def _supabase(path: str, body: dict) -> tuple[int, dict]:
@@ -885,7 +894,7 @@ def email_send_otp(body: EmailOtpSendIn, db: Session = Depends(get_db), user: Us
     if not email: raise HTTPException(409, "This account signed up with a mobile number and has no email to verify")
     if getattr(user, "email_verified", False): return {"sent": False, "verified": True}
     profile = db.scalar(select(PilotProfile).where(PilotProfile.user_id == user.id))
-    name = (body.full_name or (profile.full_name if profile else "") or "").strip().split(" ")[0] or None
+    name = (body.full_name or (reveal_pii(profile.full_name) if profile else "") or "").strip().split(" ")[0] or None
     status, payload = _supabase("otp", {"email": email, "create_user": True, "data": {"full_name": name} if name else {}})
     if status == 429: raise HTTPException(429, "Too many codes requested. Wait a minute and try again.")
     if status >= 400: raise HTTPException(502, payload.get("msg") or payload.get("error_description") or "Couldn't send the code. Try again.")
@@ -906,6 +915,224 @@ def email_verify_otp(body: EmailOtpVerifyIn, db: Session = Depends(get_db), user
     user.email_verified = True
     db.add(AuditEvent(actor_user_id=user.id, action="auth.email_verified", object_ref=str(user.id))); db.commit()
     return {"verified": True, "email": email}
+
+
+# ------------------------------------------------------------------------------------------
+# Sign-up verification (email + SMS codes via Supabase), forgot password, scoring rules
+# ------------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------------
+# SMS codes through an Indian OTP provider (DLT-compliant): 2Factor or MSG91
+# Env: SMS_PROVIDER=2factor + TWOFACTOR_API_KEY (+ optional TWOFACTOR_TEMPLATE)
+#  or  SMS_PROVIDER=msg91 + MSG91_AUTH_KEY + MSG91_TEMPLATE_ID
+# ------------------------------------------------------------------------------------------
+def _http_json(url: str, method: str = "GET", headers: dict | None = None, body: dict | None = None) -> tuple[int, dict]:
+    req = urllib.request.Request(url, method=method, headers={"Content-Type": "application/json", **(headers or {})},
+                                 data=json.dumps(body).encode() if body is not None else None)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try: return e.code, json.loads(e.read() or b"{}")
+        except ValueError: return e.code, {}
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return 503, {}
+
+
+def sms_send_code(mobile: str) -> None:
+    """Send a 6-digit code to +91 mobile. Raises HTTPException on failure."""
+    provider = os.getenv("SMS_PROVIDER", "2factor").lower()
+    if provider == "msg91":
+        key, template = os.getenv("MSG91_AUTH_KEY", ""), os.getenv("MSG91_TEMPLATE_ID", "")
+        if not key or not template: raise HTTPException(503, "SMS verification is not configured yet")
+        status, out = _http_json(f"https://control.msg91.com/api/v5/otp?template_id={template}&mobile=91{mobile}&otp_length=6&otp_expiry=10",
+                                 "POST", {"authkey": key}, {})
+        ok = status < 400 and str(out.get("type", "")).lower() == "success"
+    else:
+        key = os.getenv("TWOFACTOR_API_KEY", "")
+        if not key: raise HTTPException(503, "SMS verification is not configured yet")
+        template = os.getenv("TWOFACTOR_TEMPLATE", "")
+        url = f"https://2factor.in/API/V1/{key}/SMS/+91{mobile}/AUTOGEN" + (f"/{urllib.parse.quote(template)}" if template else "")
+        status, out = _http_json(url)
+        ok = status < 400 and str(out.get("Status", "")).lower() == "success"
+    if not ok: raise HTTPException(502, "Couldn't send the SMS code. Check the number and try again.")
+
+
+def sms_check_code(mobile: str, code: str) -> bool:
+    provider = os.getenv("SMS_PROVIDER", "2factor").lower()
+    if provider == "msg91":
+        status, out = _http_json(f"https://control.msg91.com/api/v5/otp/verify?otp={code}&mobile=91{mobile}", "GET", {"authkey": os.getenv("MSG91_AUTH_KEY", "")})
+        return status < 400 and str(out.get("type", "")).lower() == "success"
+    status, out = _http_json(f"https://2factor.in/API/V1/{os.getenv('TWOFACTOR_API_KEY', '')}/SMS/VERIFY3/91{mobile}/{code}")
+    return status < 400 and str(out.get("Status", "")).lower() == "success"
+
+
+TICKET_MINUTES = 30
+
+
+def _ticket(channel: str, target: str) -> str:
+    return jwt.encode({"purpose": "verify", "ch": channel, "t": target, "exp": datetime.now(timezone.utc) + timedelta(minutes=TICKET_MINUTES)},
+                      os.getenv("JWT_SECRET", "dev"), algorithm="HS256")
+
+
+def _read_ticket(token: str | None, channel: str) -> str | None:
+    if not token: return None
+    try:
+        p = jwt.decode(token, os.getenv("JWT_SECRET", "dev"), algorithms=["HS256"])
+        return p["t"] if p.get("purpose") == "verify" and p.get("ch") == channel else None
+    except jwt.PyJWTError:
+        return None
+
+
+def _phone(mobile: str) -> str:
+    return "+91" + normalize_mobile(mobile)
+
+
+class VerifyStartIn(BaseModel):
+    channel: str = Field(pattern="^(email|sms)$")
+    target: str = Field(min_length=5, max_length=320)
+    full_name: str | None = Field(default=None, max_length=160)
+
+
+@app.post("/api/v1/auth/verify/start")
+def verify_start(body: VerifyStartIn, db: Session = Depends(get_db)):
+    """Send a sign-up code to an email or mobile number (before the account exists)."""
+    name = (body.full_name or "").strip().split(" ")[0] or None
+    meta = {"full_name": name} if name else {}
+    if body.channel == "email":
+        email = body.target.strip().lower()
+        if "@" not in email: raise HTTPException(422, "Enter a valid email")
+        if db.scalar(select(User).where(User.email == email)): raise HTTPException(409, "An account with this email already exists. Sign in instead.")
+        status, payload = _supabase("otp", {"email": email, "create_user": True, "data": meta})
+    else:
+        try: mobile = normalize_mobile(body.target)
+        except ValueError as e: raise HTTPException(422, str(e))
+        if db.scalar(select(User).where(User.mobile == mobile)): raise HTTPException(409, "An account with this mobile number already exists. Sign in instead.")
+        sms_send_code(mobile)
+        return {"sent": True}
+    if status == 429: raise HTTPException(429, "Too many codes requested. Wait a minute and try again.")
+    if status >= 400: raise HTTPException(502, payload.get("msg") or payload.get("error_description") or "Couldn't send the code. Try again.")
+    return {"sent": True}
+
+
+class VerifyCheckIn(BaseModel):
+    channel: str = Field(pattern="^(email|sms)$")
+    target: str = Field(min_length=5, max_length=320)
+    code: str = Field(min_length=6, max_length=10, pattern=r"^\d+$")
+
+
+@app.post("/api/v1/auth/verify/check")
+def verify_check(body: VerifyCheckIn):
+    """Check a sign-up code. Returns a short-lived ticket that /auth/register accepts as proof."""
+    if body.channel == "email":
+        target = body.target.strip().lower()
+        status, _ = _supabase("verify", {"type": "email", "email": target, "token": body.code})
+    else:
+        try: target = normalize_mobile(body.target)
+        except ValueError as e: raise HTTPException(422, str(e))
+        status = 200 if sms_check_code(target, body.code) else 400
+    if status >= 400: raise HTTPException(400, "That code is wrong or has expired. Request a new one.")
+    return {"verified": True, "ticket": _ticket(body.channel, target)}
+
+
+class ForgotIn(BaseModel):
+    identifier: str = Field(min_length=5, max_length=320)
+
+
+def _find_member(db: Session, identifier: str) -> tuple[User | None, str]:
+    ident = identifier.strip().lower()
+    if "@" in ident: return db.scalar(select(User).where(User.email == ident)), "email"
+    try: return db.scalar(select(User).where(User.mobile == normalize_mobile(ident))), "sms"
+    except ValueError: return None, "sms"
+
+
+@app.post("/api/v1/auth/password/forgot")
+def password_forgot(body: ForgotIn, db: Session = Depends(get_db)):
+    """Send a reset code by email or SMS. Always answers the same way, so it can't reveal who has an account."""
+    user, channel = _find_member(db, body.identifier)
+    if user:
+        if channel == "email": _supabase("otp", {"email": user.email, "create_user": True})
+        elif user.mobile:
+            try: sms_send_code(user.mobile)
+            except HTTPException: pass
+        db.add(AuditEvent(actor_user_id=user.id, action="auth.password_reset_requested", object_ref=str(user.id))); db.commit()
+    return {"sent": True, "channel": channel}
+
+
+class ResetIn(BaseModel):
+    identifier: str = Field(min_length=5, max_length=320)
+    code: str = Field(min_length=6, max_length=10, pattern=r"^\d+$")
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def _strong(cls, v: str) -> str:
+        import re as _re
+        if not _re.search(r"[A-Z]", v): raise ValueError("Password must include at least one uppercase letter")
+        if not _re.search(r"[0-9]", v): raise ValueError("Password must include at least one number")
+        if not _re.search(r"[^A-Za-z0-9]", v): raise ValueError("Password must include at least one special character")
+        return v
+
+
+@app.post("/api/v1/auth/password/reset")
+def password_reset(body: ResetIn, db: Session = Depends(get_db)):
+    user, channel = _find_member(db, body.identifier)
+    if not user: raise HTTPException(400, "That code is wrong or has expired. Request a new one.")
+    if channel == "email": status, _ = _supabase("verify", {"type": "email", "email": user.email, "token": body.code})
+    else: status = 200 if user.mobile and sms_check_code(user.mobile, body.code) else 400
+    if status >= 400: raise HTTPException(400, "That code is wrong or has expired. Request a new one.")
+    user.password_hash = hash_password(body.new_password)
+    if channel == "email": user.email_verified = True
+    else: user.mobile_verified = True
+    db.add(AuditEvent(actor_user_id=user.id, action="auth.password_reset", object_ref=str(user.id))); db.commit()
+    return {"reset": True}
+
+
+SIGNAL_RULES = {
+    "INBOUND_BREADTH": "5 or more different people paid it within 24 hours",
+    "OUTBOUND_BREADTH": "It paid 5 or more different people within 24 hours",
+    "RAPID_ONWARD": "Money left within 30 minutes of first arriving",
+    "PASS_THROUGH": "Most received money left again within 30 minutes",
+    "SHORT_DWELL": "Money typically stays only a few minutes before leaving",
+    "FAN_IN_OUT": "3 or more people paid it, then it paid out within 30 minutes",
+    "STRUCTURING": "Repeated identical amounts, shrinking amounts, or amounts just under common limits",
+    "ROUND_TRIP": "Money went back and forth with the same person",
+    "VICTIM_CONVERGENCE": "80% or more of its payers were paying it for the first time",
+    "ESCALATION": "One payer's amounts grew 3 times or more (common in task scams)",
+    "SCAM_AMOUNTS": "Fee-like amounts such as ₹499, ₹999, ₹4,999 or ₹9,999",
+    "MULE_LIFECYCLE": "Dormant then suddenly busy, or brand-new and already very busy",
+    "COORDINATED": "Shares many of the same payers with other suspicious accounts",
+    "DENSE_CORE": "Sits deep inside a densely connected payment cluster",
+    "BRIDGE": "Many money paths between groups run through it",
+    "RING": "Part of a tight group that keeps money circulating among itself",
+    "ANOMALY": "Its overall payment behaviour is unusual compared with other accounts",
+    "LARGE_RELAY": "₹10,000 or more sent on within 30 minutes of arriving",
+    "HIGH_FORWARDING": "80% or more of ₹10,000+ received was forwarded within 6 hours",
+    "REGULAR_CUSTOMERS": "Half or more of its payers have paid it before (shop-like), which lowers the risk",
+}
+
+
+@app.get("/api/v1/scoring/model")
+def scoring_model(user: User = Depends(current_user)):
+    """How TraceScore is calculated: every rule, its points and the bands. Shown behind the "i" button in the apps."""
+    signals = [{"code": c, "label": tracesense.LABELS[c], "points": tracesense.WEIGHTS[c], "rule": SIGNAL_RULES.get(c, ""), "family": "behaviour"} for c in tracesense.WEIGHTS]
+    community_rules = [
+        {"code": "NEW_ACCOUNT", "label": "No payment history yet", "points": 20, "rule": "trace.pay has not seen the account before", "family": "community"},
+        {"code": "COMMUNITY_REPORTS", "label": "Reported by trace.pay users", "points": "+8 per report (max 30)", "rule": "Reports in the last 90 days", "family": "community"},
+        {"code": "VERIFIED_REPORTS", "label": "Reports confirmed by investigators", "points": "+20, then +10 each (max 40)", "rule": "Confirmed after review", "family": "community"},
+        {"code": "COMPLAINTS", "label": "Named in victim complaints", "points": "+15 each (max 30)", "rule": "Complaints naming this account", "family": "community"},
+        {"code": "INVESTIGATOR_FLAG", "label": "Flagged by investigators", "points": 40, "rule": "Confirmed as fraudulent after review", "family": "community"},
+        {"code": "INVESTIGATOR_CLEARED", "label": "Cleared by investigators", "points": -25, "rule": "Reviewed and found not suspicious", "family": "trust"},
+        {"code": "VERIFIED_MERCHANT", "label": "Verified merchant", "points": -20, "rule": "Business verified by trace.pay", "family": "trust"},
+    ]
+    return {
+        "summary": "TraceScore adds the points of every rule an account matches, then keeps the total between 0 and 100. Higher means riskier.",
+        "bands": [{"range": "0–24", "label": "Excellent", "band": "low", "meaning": "No warning signs"},
+                  {"range": "25–49", "label": "Average", "band": "watch", "meaning": "Some warning signs: make sure you know who you're paying"},
+                  {"range": "50–74", "label": "Poor", "band": "review", "meaning": "Several warning signs: check carefully"},
+                  {"range": "75–100", "label": "Poor", "band": "high_review", "meaning": "Strong scam pattern: don't pay unless you know them well"}],
+        "signals": signals, "community": community_rules,
+        "window": "Behaviour rules look at the account's payments in the 24 hours before its latest activity (some use 6 hours or 7 days).",
+    }
 
 
 @app.get("/api/v1/lookup")
@@ -938,7 +1165,7 @@ def lookup_account(ref: str = Query(..., min_length=3, max_length=600), amount: 
     active_reports = [r for r in reports if r.status != "rejected"]
     return {
         "ref": target, "qr": {k: qr[k] for k in ("name", "amount", "note", "merchant_code", "txn_ref")}, "is_tracepay": qr["is_tracepay"],
-        "display_name": (member.full_name if member else None) or (merchant or {}).get("display_name") or qr["name"],
+        "display_name": (reveal_pii(member.full_name) if member else None) or (merchant or {}).get("display_name") or qr["name"],
         "member": bool(member), "merchant": merchant,
         "score": combined["score"], "band": combined["band"], "verdict": community.verdict(combined["band"]),
         "factors": combined["factors"], "confidence": trace.get("confidence", 0.0),
@@ -1037,6 +1264,8 @@ class ExternalPaymentIn(BaseModel):
     upi_txn_id: str | None = Field(default=None, max_length=80)
     risk_score: int | None = Field(default=None, ge=0, le=100)
     risk_band: str | None = Field(default=None, max_length=24)
+    paid_at: datetime | None = None
+    payee_mobile: str | None = Field(default=None, max_length=20)
 
 
 @app.post("/api/v1/external-payments", status_code=201)
@@ -1049,13 +1278,14 @@ async def record_external_payment(body: ExternalPaymentIn, db: Session = Depends
     payer = db.scalar(select(PilotProfile.vpa_id).where(PilotProfile.user_id == user.id)) or f"member:{user.id}"
     row = ExternalPayment(user_id=user.id, payer_vpa=payer, payee_vpa=qr["vpa"], payee_name=body.payee_name or qr["name"], amount=body.amount,
                           app=body.app.lower()[:40], status=body.status, source=body.source, upi_txn_id=body.upi_txn_id,
-                          risk_score=body.risk_score, risk_band=body.risk_band)
+                          risk_score=body.risk_score, risk_band=body.risk_band, paid_at=body.paid_at,
+                          payee_mobile="".join(ch for ch in (body.payee_mobile or "") if ch.isdigit())[-10:] or None)
     db.add(row); db.flush()
     if body.status == "SUCCESS":
         ref = ("UPI-" + body.upi_txn_id) if body.upi_txn_id else "EXT-" + uuid4().hex[:16].upper()
         if not db.scalar(select(Transaction).where(Transaction.transaction_ref == ref[:128])):
             tx = Transaction(transaction_ref=ref[:128], event_id="EXT-" + uuid4().hex, sender_id=payer, receiver_id=qr["vpa"], amount=body.amount,
-                             currency="INR", occurred_at=datetime.now(timezone.utc), source_id=f"member-app:{row.app}",
+                             currency="INR", occurred_at=body.paid_at or datetime.now(timezone.utc), source_id=f"member-app:{row.app}",
                              source_record_ref=f"external_payment:{row.id}", provenance_status="normalized" if body.source == "manual" else "observed")
             db.add(tx)
             row.transaction_ref = tx.transaction_ref
@@ -1069,7 +1299,8 @@ async def record_external_payment(body: ExternalPaymentIn, db: Session = Depends
 def _external_json(r: ExternalPayment) -> dict:
     return {"id": r.id, "payer_vpa": r.payer_vpa, "payee_vpa": r.payee_vpa, "payee_name": r.payee_name, "amount": str(r.amount), "app": r.app,
             "status": r.status, "source": r.source, "upi_txn_id": r.upi_txn_id, "risk_score": r.risk_score, "risk_band": r.risk_band,
-            "transaction_ref": r.transaction_ref, "created_at": r.created_at.isoformat()}
+            "transaction_ref": r.transaction_ref, "paid_at": r.paid_at.isoformat() if r.paid_at else None,
+            "payee_mobile": r.payee_mobile, "created_at": r.created_at.isoformat()}
 
 
 @app.get("/api/v1/external-payments")

@@ -23,12 +23,12 @@ export default function AccountsData({token, setToast, setError}) {
   useEffect(() => { if (isAdmin) load(); }, [token]);
   if (!isAdmin) return <div className="panel"><h3>Admins only</h3><p className="gx-fine">Sign in as an administrator to manage accounts and data.</p></div>;
   const shown = rows.filter(r => (!onlyUnverified || r.email_verified === false) && (!q || [r.name, r.email, r.mobile, r.vpa_id].join(' ').toLowerCase().includes(q.toLowerCase())));
-  const unverified = rows.filter(r => r.email_verified === false && r.role === 'pilot_user').length;
+  const unverified = rows.filter(r => r.email_verified === false && r.role !== 'admin').length;
   async function setVerified(r, verified) {
     try { await api(`/api/v1/admin/accounts/${r.id}/email-verified`, {method: 'PATCH', body: JSON.stringify({verified})}, token); setToast(verified ? 'Marked verified: payments unlocked' : 'Marked unverified: payments blocked'); load(); }
     catch (e) { setError(e.message); }
   }
-  const unlinked = rows.filter(r => !r.mobile && r.role === 'pilot_user').length;
+  const unlinked = rows.filter(r => !r.mobile && r.role !== 'admin').length;
   return <section className="ad">
     <div className="ad-head">
       <div><div className="eyebrow">ADMIN</div><h2 className="cirka">Accounts & data</h2>
@@ -50,7 +50,7 @@ export default function AccountsData({token, setToast, setError}) {
           <button className="np np-white np-sm" onClick={() => setMobileFor(r)}><Phone size={14}/> {r.mobile ? 'Change' : 'Link'} mobile</button>
           {r.email_verified !== null && r.email_verified !== undefined && <button className="np np-white np-sm" onClick={() => setVerified(r, !r.email_verified)}>
             {r.email_verified ? 'Unverify' : <><BadgeCheck size={14}/> Mark verified</>}</button>}
-          {r.role === 'pilot_user' && <button className="np np-danger np-sm" onClick={() => setEraseFor(r)}><Trash2 size={14}/> Erase</button>}
+          {r.role !== 'admin' && <button className="np np-danger np-sm" onClick={() => setEraseFor(r)}><Trash2 size={14}/> Erase</button>}
         </span>
       </div>)}
       {!shown.length && <p className="gx-fine" style={{padding: 18}}>No accounts match.</p>}

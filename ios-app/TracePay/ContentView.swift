@@ -4,6 +4,8 @@ import LocalAuthentication
 import CoreImage.CIFilterBuiltins
 import AVFoundation
 import UIKit
+import PhotosUI
+import Vision
 
 // MARK: - Design system (trace.pay 6, light theme)
 
@@ -428,6 +430,7 @@ struct SignInScreen: View {
     @State private var password = ""
     @State private var busy = false
     @State private var message = ""
+    @State private var showForgot = false
     var body: some View {
         ZStack {
             ScreenBackground()
@@ -443,6 +446,8 @@ struct SignInScreen: View {
                         else { TPField(icon: "envelope", placeholder: "Email", text: $email, keyboard: .emailAddress) }
                         TPField(icon: "lock", placeholder: "Password", text: $password, secure: true)
                     }.padding(.top, 16)
+                    Button("Forgot password?") { showForgot = true }.font(.tp(14.5, .medium)).foregroundStyle(TP.violet)
+                        .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
                     if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad).padding(.top, 12) }
                 }.padding(24)
             }
@@ -451,6 +456,7 @@ struct SignInScreen: View {
                     .buttonStyle(NeoButtonStyle()).disabled(busy || password.isEmpty).padding(.horizontal, 24).padding(.vertical, 12).background(.white)
             }
         }
+        .sheet(isPresented: $showForgot) { ForgotPasswordSheet() }
     }
     @MainActor private func signIn() async {
         busy = true; message = ""; defer { busy = false }
@@ -469,76 +475,125 @@ struct SignUpScreen: View {
     @AppStorage("tp.pendingName") private var pendingName = ""
     @State private var step = 1
     @State private var name = ""
-    @State private var method = 0
     @State private var mobile = ""
     @State private var email = ""
+    @State private var emailCode = ""
+    @State private var smsCode = ""
+    @State private var emailTicket = ""
+    @State private var smsTicket = ""
+    @State private var resendIn = 0
     @State private var password = ""
     @State private var confirm = ""
     @State private var busy = false
     @State private var message = ""
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private var rules: [(String, Bool)] {
-        [("12+ characters", password.count >= 12), ("Uppercase letter", password.contains(where: \.isUppercase)),
+        [("8+ characters", password.count >= 8), ("Uppercase letter", password.contains(where: \.isUppercase)),
          ("A number", password.contains(where: \.isNumber)), ("A symbol", password.contains(where: { !$0.isLetter && !$0.isNumber }))]
     }
     private var strength: Int { rules.filter { $0.1 }.count }
-    private var stepOneValid: Bool {
-        name.trimmingCharacters(in: .whitespaces).count >= 2 && (method == 0 ? mobile.filter(\.isNumber).count == 10 : email.contains("@") && email.contains("."))
-    }
+    private var cleanMobile: String { String(mobile.filter(\.isNumber).suffix(10)) }
+    private var detailsOK: Bool { name.trimmingCharacters(in: .whitespaces).count >= 2 && cleanMobile.count == 10 && email.contains("@") && email.contains(".") }
+    private var verified: Bool { !emailTicket.isEmpty && !smsTicket.isEmpty }
+    private var passwordOK: Bool { strength == 4 && password == confirm }
+    private var titles: [(String, String, String)] { [("Create account", "Let's set you up", "Your name, mobile number and email. We'll verify both."),
+        ("Verify", "Enter your codes", "We sent a code to +91 \(cleanMobile) and another to \(email)."),
+        ("Security", "Create a password", "You'll use it to sign in on a new phone.")] }
+
     var body: some View {
         ZStack {
             ScreenBackground()
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    BackHeader(onBack: { if step == 1 { onBack() } else { step = 1 } }, trailing: "Step \(step) of 2")
-                    ProgressBar(step: step, total: 2).padding(.top, 20)
-                    Caption(text: step == 1 ? "Create account" : "Security").padding(.top, 24)
-                    Text(step == 1 ? "Let's set you up" : "Create a password").font(.tp(32, .semibold)).foregroundStyle(TP.ink).padding(.top, 8)
-                    Text(step == 1 ? "Sign up with your mobile number or email." : "You'll use it to sign in on a new phone.").font(.tp(15)).foregroundStyle(TP.muted).padding(.top, 6)
+                    BackHeader(onBack: { if step == 1 { onBack() } else { step -= 1 } }, trailing: "Step \(step) of 3")
+                    ProgressBar(step: step, total: 3).padding(.top, 20)
+                    Caption(text: titles[step - 1].0).padding(.top, 24)
+                    Text(titles[step - 1].1).font(.tp(32, .semibold)).foregroundStyle(TP.ink).padding(.top, 8)
+                    Text(titles[step - 1].2).font(.tp(15)).foregroundStyle(TP.muted).padding(.top, 6).padding(.bottom, 22)
                     if step == 1 {
-                        SegmentSwitch(options: [("iphone", "Mobile"), ("envelope", "Email")], selection: $method).padding(.top, 24)
                         VStack(spacing: 12) {
                             TPField(icon: "person", placeholder: "Full name", text: $name)
-                            if method == 0 { TPField(icon: "iphone", placeholder: "10-digit mobile number", text: $mobile, keyboard: .numberPad, prefix: "+91") }
-                            else { TPField(icon: "envelope", placeholder: "Email", text: $email, keyboard: .emailAddress) }
-                        }.padding(.top, 16)
+                            TPField(icon: "iphone", placeholder: "10-digit mobile number", text: $mobile, keyboard: .numberPad, prefix: "+91")
+                            TPField(icon: "envelope", placeholder: "Email", text: $email, keyboard: .emailAddress)
+                        }
                         Text("By continuing you agree to the Terms and Privacy Policy.").font(.tp(12.5)).foregroundStyle(TP.muted).padding(.top, 14)
+                    } else if step == 2 {
+                        VStack(alignment: .leading, spacing: 22) {
+                            codeBlock(icon: "message.fill", title: "SMS code", sub: "+91 \(cleanMobile)", code: $smsCode, done: !smsTicket.isEmpty)
+                            codeBlock(icon: "envelope.fill", title: "Email code", sub: email, code: $emailCode, done: !emailTicket.isEmpty)
+                            Button { Task { await sendCodes() } } label: {
+                                Text(resendIn > 0 ? "Resend codes in \(resendIn)s" : "Resend codes").font(.tp(14.5, .medium)).foregroundStyle(resendIn > 0 ? TP.faint : TP.violet)
+                            }.disabled(resendIn > 0 || busy).frame(maxWidth: .infinity)
+                        }
                     } else {
                         VStack(spacing: 12) {
                             TPField(icon: "lock", placeholder: "Password", text: $password, secure: true)
-                            HStack(spacing: 6) {
-                                ForEach(0..<4, id: \.self) { i in
-                                    Capsule().fill(i < strength ? [TP.bad, TP.warn, TP.violetLight, TP.good][max(0, strength - 1)] : TP.hair).frame(height: 5)
-                                }
-                            }
+                            HStack(spacing: 6) { ForEach(0..<4, id: \.self) { i in Capsule().fill(i < strength ? [TP.bad, TP.warn, TP.violetLight, TP.good][max(0, strength - 1)] : TP.hair).frame(height: 5) } }
                             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
-                                ForEach(rules.indices, id: \.self) { i in
-                                    Label(rules[i].0, systemImage: rules[i].1 ? "checkmark.circle.fill" : "circle").font(.tp(13)).foregroundStyle(rules[i].1 ? TP.good : TP.faint)
-                                }
+                                ForEach(rules.indices, id: \.self) { i in Label(rules[i].0, systemImage: rules[i].1 ? "checkmark.circle.fill" : "circle").font(.tp(13)).foregroundStyle(rules[i].1 ? TP.good : TP.faint) }
                             }
                             TPField(icon: "lock", placeholder: "Confirm password", text: $confirm, secure: true)
-                        }.padding(.top, 22)
+                        }
                     }
                     if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad).padding(.top, 12) }
                 }.padding(24)
             }
             .safeAreaInset(edge: .bottom) {
                 Button { Task { await next() } } label: {
-                    if busy { ProgressView().tint(.white) } else { Label(step == 1 ? "Continue" : "Create account", systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }
+                    if busy { ProgressView().tint(.white) } else { Label(step == 1 ? "Send codes" : step == 2 ? "Continue" : "Create account", systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }
                 }
                 .buttonStyle(NeoButtonStyle())
-                .disabled(busy || (step == 1 ? !stepOneValid : !(strength == 4 && password == confirm)))
-                .opacity((step == 1 ? stepOneValid : strength == 4 && password == confirm) ? 1 : 0.5)
+                .disabled(busy || !(step == 1 ? detailsOK : step == 2 ? verified : passwordOK))
+                .opacity((step == 1 ? detailsOK : step == 2 ? verified : passwordOK) ? 1 : 0.5)
                 .padding(.horizontal, 24).padding(.vertical, 12).background(.white)
             }
+        }
+        .onReceive(tick) { _ in if resendIn > 0 { resendIn -= 1 } }
+        .onChange(of: smsCode) { _, v in if v.count == 6 && smsTicket.isEmpty { Task { await check("sms", v) } } }
+        .onChange(of: emailCode) { _, v in if v.count == 6 && emailTicket.isEmpty { Task { await check("email", v) } } }
+    }
+
+    private func codeBlock(icon: String, title: String, sub: String, code: Binding<String>, done: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: done ? "checkmark.seal.fill" : icon).font(.system(size: 16)).foregroundStyle(done ? TP.good : TP.violet)
+                    .frame(width: 36, height: 36).background(done ? TP.goodBg : TP.violetSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(done ? "\(title) verified" : title).font(.tp(15, .semibold)).foregroundStyle(done ? TP.good : TP.ink)
+                    Text(sub).font(.tp(12.5)).foregroundStyle(TP.muted)
+                }
+            }
+            if !done { OTPCodeField(code: code) }
+        }
+    }
+
+    @MainActor private func sendCodes() async {
+        busy = true; message = ""; defer { busy = false }
+        do {
+            try await session.startVerification(channel: "sms", target: cleanMobile, name: name)
+            try await session.startVerification(channel: "email", target: email, name: name)
+            resendIn = 30
+        } catch { message = error.localizedDescription }
+    }
+    @MainActor private func check(_ channel: String, _ code: String) async {
+        message = ""
+        do {
+            let t = try await session.checkVerification(channel: channel, target: channel == "sms" ? cleanMobile : email, code: code)
+            if channel == "sms" { smsTicket = t } else { emailTicket = t }
+            Haptic.success()
+        } catch {
+            message = error.localizedDescription; Haptic.error()
+            if channel == "sms" { smsCode = "" } else { emailCode = "" }
         }
     }
     @MainActor private func next() async {
         message = ""
-        if step == 1 { withAnimation { step = 2 }; return }
+        if step == 1 { await sendCodes(); if message.isEmpty { withAnimation { step = 2 } }; return }
+        if step == 2 { withAnimation { step = 3 }; return }
         busy = true; defer { busy = false }
         do {
             pendingName = name.trimmingCharacters(in: .whitespaces)
-            try await session.signUp(email: method == 1 ? email : nil, mobile: method == 0 ? mobile.filter(\.isNumber) : nil, password: password)
+            try await session.signUpVerified(email: email, mobile: cleanMobile, password: password, emailTicket: emailTicket, smsTicket: smsTicket)
             Haptic.success()
         } catch { message = error.localizedDescription; Haptic.error() }
     }
@@ -573,7 +628,8 @@ struct SetupFlow: View {
     private let genders = ["Male", "Female", "Non-binary", "Prefer not to say"]
     private let resendTick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     /// Email sign-ups finish with a one-time code; mobile sign-ups have no email to verify.
-    private var needsEmail: Bool { let id = session.email ?? ""; return id.contains("@") && !id.hasSuffix("@mobile.tracepay.app") }
+    /// Email and mobile are verified during sign-up now; older unverified accounts verify from the Home banner.
+    private var needsEmail: Bool { false }
     private var total: Int { needsEmail ? 4 : 3 }
     var body: some View {
         ZStack {
@@ -637,18 +693,42 @@ struct SetupFlow: View {
     private var selfieStep: some View {
         VStack(spacing: 16) {
             ZStack {
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .fill(LinearGradient(colors: [Color(hex: 0x3C2A7A), Color(hex: 0x110828)], startPoint: .top, endPoint: .bottom))
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(LinearGradient(colors: [TP.violetSoft, Color.white], startPoint: .top, endPoint: .bottom))
+                    .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(TP.hair))
                 if let photo, let img = UIImage(data: photo) {
-                    Image(uiImage: img).resizable().scaledToFill().frame(width: 190, height: 240).clipShape(Ellipse())
-                        .overlay(Ellipse().stroke(TP.lime, lineWidth: 3))
+                    VStack(spacing: 12) {
+                        Image(uiImage: img).resizable().scaledToFill().frame(width: 170, height: 214).clipShape(Ellipse())
+                            .overlay(Ellipse().stroke(TP.good, lineWidth: 4)).shadow(color: TP.good.opacity(0.25), radius: 16, y: 8)
+                        Label("Clear face captured", systemImage: "checkmark.seal.fill").font(.tp(14, .semibold)).foregroundStyle(TP.good)
+                            .padding(.horizontal, 12).padding(.vertical, 6).background(TP.goodBg, in: Capsule())
+                    }
                 } else {
-                    Ellipse().stroke(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 3, dash: [8, 6])).frame(width: 190, height: 240)
-                    Image(systemName: "person.fill").font(.system(size: 70)).foregroundStyle(Color.white.opacity(0.3))
+                    VStack(spacing: 14) {
+                        ZStack {
+                            Ellipse().stroke(TP.violet.opacity(0.35), style: StrokeStyle(lineWidth: 3, dash: [9, 7])).frame(width: 150, height: 190)
+                            Image(systemName: "face.smiling").font(.system(size: 64, weight: .light)).foregroundStyle(TP.violet)
+                        }
+                        Text("Your face goes inside the oval").font(.tp(14, .medium)).foregroundStyle(TP.ink2)
+                    }
                 }
-            }.frame(height: 320)
+            }.frame(height: 300)
+            VStack(alignment: .leading, spacing: 12) {
+                tip("sun.max.fill", "Good light", "Face a window or a lamp; avoid strong light behind you.")
+                tip("eyeglasses", "Nothing covering your face", "Take off sunglasses, masks and caps.")
+                tip("hand.raised.fill", "Hold still", "The photo is taken automatically when your face is clear.")
+                tip("lock.fill", "Private", "Encrypted, and only checked for one clear face.")
+            }.padding(16).background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(TP.hair))
             Button { showCamera = true } label: { Label(photo == nil ? "Open camera" : "Retake selfie", systemImage: "camera.fill") }
                 .buttonStyle(NeoButtonStyle(kind: photo == nil ? .violet : .white))
+        }
+    }
+    private func tip(_ icon: String, _ title: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(TP.violet).frame(width: 32, height: 32).background(TP.violetSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) { Text(title).font(.tp(14, .semibold)).foregroundStyle(TP.ink); Text(text).font(.tp(12.5)).foregroundStyle(TP.muted) }
+            Spacer(minLength: 0)
         }
     }
     private var lockStep: some View {
@@ -1274,6 +1354,7 @@ struct RiskReportView: View {
     @AppStorage("tp.voice") private var voice = false
     @State private var synth = AVSpeechSynthesizer()
     @State private var shown = 0
+    @State private var showRules = false
     private var raises: [SafetyFactor] { model.factors.filter { $0.points >= 0 } }
     private var lowers: [SafetyFactor] { model.factors.filter { $0.points < 0 } }
     var body: some View {
@@ -1286,7 +1367,13 @@ struct RiskReportView: View {
                 }
                 Text(model.ref).font(.tp(13)).foregroundStyle(TP.muted)
             }
-            ScoreMeterView(score: model.score, band: model.band)
+            ZStack(alignment: .topTrailing) {
+                ScoreMeterView(score: model.score, band: model.band).frame(maxWidth: .infinity)
+                Button { showRules = true } label: {
+                    Image(systemName: "info.circle.fill").font(.system(size: 22)).foregroundStyle(TP.violet)
+                        .frame(width: 44, height: 44).background(Color.white, in: Circle()).shadow(color: TP.ink.opacity(0.08), radius: 6, y: 2)
+                }.accessibilityLabel("How the score works")
+            }
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: model.band == "low" ? "checkmark.shield.fill" : "exclamationmark.triangle.fill").font(.system(size: 20)).foregroundStyle(Risk.color(model.band))
                 VStack(alignment: .leading, spacing: 3) {
@@ -1316,6 +1403,11 @@ struct RiskReportView: View {
                     }
                 }
             }
+            HStack {
+                Text("Why this score").font(.tp(18, .semibold)).foregroundStyle(TP.ink)
+                Spacer()
+                Button { showRules = true } label: { Label("How it's scored", systemImage: "info.circle").font(.tp(13, .medium)).foregroundStyle(TP.violet) }
+            }
             if !raises.isEmpty { section("What raises the risk") { factorList(raises, offset: 0) } }
             if !lowers.isEmpty { section("What lowers the risk") { factorList(lowers, offset: raises.count) } }
             if model.factors.isEmpty { section("Why") { Text("No warning or trust signals were found for this account.").font(.tp(14)).foregroundStyle(TP.muted).padding(.vertical, 10) } }
@@ -1338,6 +1430,7 @@ struct RiskReportView: View {
             for i in model.factors.indices { try? await Task.sleep(nanoseconds: 100_000_000); withAnimation(.easeOut(duration: 0.3)) { shown = i + 1 } }
         }
         .onDisappear { synth.stopSpeaking(at: .immediate) }
+        .sheet(isPresented: $showRules) { ScoringInfoSheet() }
     }
     private func factorList(_ list: [SafetyFactor], offset: Int) -> some View {
         ForEach(list.indices, id: \.self) { i in
@@ -1378,22 +1471,33 @@ struct FactorRow: View {
     private var level: Int { abs(factor.points) >= 15 ? 3 : abs(factor.points) >= 8 ? 2 : 1 }
     var body: some View {
         let tint = lowers ? TP.good : TP.bad
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: Risk.icon(factor.code)).font(.system(size: 16, weight: .semibold)).foregroundStyle(tint)
-                .frame(width: 42, height: 42).background(lowers ? TP.goodBg : TP.badBg, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(factor.label).font(.tp(14.5, .medium)).foregroundStyle(TP.ink).fixedSize(horizontal: false, vertical: true)
-                if !factor.detail.isEmpty { Text(factor.detail).font(.tp(12.5)).foregroundStyle(TP.muted).fixedSize(horizontal: false, vertical: true) }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: Risk.icon(factor.code)).font(.system(size: 17, weight: .semibold)).foregroundStyle(.white)
+                    .frame(width: 42, height: 42).background(tint, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(factor.label).font(.tp(15, .semibold)).foregroundStyle(TP.ink).fixedSize(horizontal: false, vertical: true)
+                    if factor.points != 0 {
+                        Text("\(["", "Low", "Medium", "High"][level]) impact · \(lowers ? "lowers" : "raises") risk").font(.tp(12)).foregroundStyle(tint)
+                    }
+                }
+                Spacer(minLength: 6)
                 if factor.points != 0 {
-                    HStack(spacing: 3) {
-                        ForEach(1...3, id: \.self) { i in RoundedRectangle(cornerRadius: 1).fill(i <= level ? tint : TP.hair).frame(width: 14, height: 4) }
-                        Text(["", "Low", "Medium", "High"][level] + " impact").font(.tp(10.5, .medium)).foregroundStyle(TP.faint).textCase(.uppercase).padding(.leading, 4)
-                    }.padding(.top, 2)
+                    Text("\(factor.points > 0 ? "+" : "−")\(abs(factor.points))").font(.tp(16, .bold)).foregroundStyle(tint).monospacedDigit()
+                        .padding(.horizontal, 10).padding(.vertical, 5).background(tint.opacity(0.1), in: Capsule())
                 }
             }
-            Spacer(minLength: 6)
+            if !factor.detail.isEmpty {
+                Text(factor.detail).font(.tp(13)).foregroundStyle(TP.ink2).fixedSize(horizontal: false, vertical: true)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(TP.canvas, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
             if factor.points != 0 {
-                Text("\(factor.points > 0 ? "+" : "−")\(abs(factor.points))").font(.tp(15, .semibold)).foregroundStyle(tint).monospacedDigit()
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(TP.hair)
+                        Capsule().fill(tint).frame(width: g.size.width * min(1, CGFloat(abs(factor.points)) / 25))
+                    }
+                }.frame(height: 5)
             }
         }.padding(.vertical, 12)
     }
@@ -1840,31 +1944,48 @@ struct SuccessView: View {
     let via: String
     let reference: String?
     let failure: String?
+    var details: [(String, String)] = []
     let onDone: () -> Void
     @State private var pop = false
     var body: some View {
-        VStack(spacing: 14) {
-            Spacer()
-            Image(systemName: ok ? "checkmark" : "xmark").font(.system(size: 52, weight: .bold)).foregroundStyle(.white)
-                .frame(width: 116, height: 116)
-                .background(LinearGradient(colors: ok ? [Color(hex: 0x14B86C), TP.good] : [TP.bad, Color(hex: 0xB42A1B)], startPoint: .top, endPoint: .bottom),
-                            in: RoundedRectangle(cornerRadius: 36, style: .continuous))
-                .shadow(color: (ok ? TP.good : TP.bad).opacity(0.45), radius: 24, y: 14)
-                .cornerSquares(ok ? TP.lime : TP.badBg, size: 12)
-                .scaleEffect(pop ? 1 : 0.4).opacity(pop ? 1 : 0)
-            Text(ok ? "Paid to \(to)" : "Payment not completed").font(.tp(15)).foregroundStyle(TP.muted).padding(.top, 24)
-            if ok { Text(rupees(amount)).font(.tp(52, .semibold)).foregroundStyle(TP.ink).monospacedDigit() }
-            Text(ok ? "via \(via) · checked by trace.pay" : (failure ?? "No money moved. You can try again safely."))
-                .font(.tp(13)).foregroundStyle(TP.muted).multilineTextAlignment(.center).padding(.horizontal, 30)
-            if let reference { Text(reference).font(.system(size: 12, design: .monospaced)).foregroundStyle(TP.muted).padding(.top, 4) }
-            Spacer()
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 14) {
+                Image(systemName: ok ? "checkmark" : "xmark").font(.system(size: 52, weight: .bold)).foregroundStyle(.white)
+                    .frame(width: 116, height: 116)
+                    .background(LinearGradient(colors: ok ? [Color(hex: 0x14B86C), TP.good] : [TP.bad, Color(hex: 0xB42A1B)], startPoint: .top, endPoint: .bottom),
+                                in: RoundedRectangle(cornerRadius: 36, style: .continuous))
+                    .shadow(color: (ok ? TP.good : TP.bad).opacity(0.45), radius: 24, y: 14)
+                    .cornerSquares(ok ? TP.lime : TP.badBg, size: 12)
+                    .scaleEffect(pop ? 1 : 0.4).opacity(pop ? 1 : 0).padding(.top, 40)
+                Text(ok ? "Paid to \(to)" : "Payment not completed").font(.tp(15)).foregroundStyle(TP.muted).padding(.top, 20).multilineTextAlignment(.center)
+                if ok { Text(rupees(amount)).font(.tp(52, .semibold)).foregroundStyle(TP.ink).monospacedDigit() }
+                Text(ok ? "via \(via) · checked by trace.pay" : (failure ?? "No money moved. You can try again safely."))
+                    .font(.tp(13)).foregroundStyle(TP.muted).multilineTextAlignment(.center).padding(.horizontal, 30)
+                let rows = details + (reference.map { [("Reference", $0)] } ?? [])
+                if ok && !rows.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(rows.indices, id: \.self) { i in
+                            HStack(alignment: .top) {
+                                Text(rows[i].0).font(.tp(13.5)).foregroundStyle(TP.muted)
+                                Spacer(minLength: 12)
+                                Text(rows[i].1).font(.tp(13.5, .medium)).foregroundStyle(TP.ink).multilineTextAlignment(.trailing).textSelection(.enabled)
+                            }.padding(.vertical, 11)
+                            if i < rows.count - 1 { Divider() }
+                        }
+                    }.padding(.horizontal, 16).background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(TP.hair)).padding(.top, 8)
+                }
+            }.padding(.horizontal, 22)
+        }
+        .safeAreaInset(edge: .bottom) {
             VStack(spacing: 10) {
                 if ok {
-                    ShareLink(item: "trace.pay receipt: \(rupees(amount)) to \(to) via \(via). Ref \(reference ?? "-")") { Label("Share receipt", systemImage: "square.and.arrow.up") }
-                        .buttonStyle(NeoButtonStyle(kind: .white))
+                    ShareLink(item: (["trace.pay receipt", "\(rupees(amount)) to \(to) via \(via)"] + details.map { "\($0.0): \($0.1)" } + [reference.map { "Reference: \($0)" } ?? ""]).joined(separator: "\n")) {
+                        Label("Share receipt", systemImage: "square.and.arrow.up")
+                    }.buttonStyle(NeoButtonStyle(kind: .white))
                 }
                 Button("Done", action: onDone).buttonStyle(NeoButtonStyle())
-            }.padding(.horizontal, 22).padding(.bottom, 12)
+            }.padding(.horizontal, 22).padding(.vertical, 10)
         }
         .onAppear { withAnimation(.spring(response: 0.5, dampingFraction: 0.6)) { pop = true }; if ok { Haptic.success() } }
     }
@@ -1874,12 +1995,21 @@ struct SuccessView: View {
 
 struct UPIApp: Identifiable { let id: String; let name: String; let schemes: [String]; let store: String; let color: Color }
 
+/// The payee's mobile number when the UPI ID starts with one (e.g. 8142180305@superyes).
+func mobileFromUPI(_ vpa: String) -> String? {
+    let head = vpa.components(separatedBy: "@").first ?? ""
+    let digits = head.filter(\.isNumber)
+    guard head.count == digits.count, digits.count >= 10 else { return nil }
+    let last10 = String(digits.suffix(10))
+    return "6789".contains(last10.first ?? "0") ? last10 : nil
+}
+
 struct ExternalPayScreen: View {
     @EnvironmentObject private var session: TracePaySession
     @Environment(\.scenePhase) private var scenePhase
     let raw: String
     let onDone: () -> Void
-    enum Prompt: Identifiable { case confirm, notInstalled, howTo; var id: Int { self == .confirm ? 0 : self == .notInstalled ? 1 : 2 } }
+    enum Prompt: Identifiable { case notInstalled; var id: Int { 1 } }
     private let apps: [UPIApp] = [
         UPIApp(id: "gpay", name: "Google Pay", schemes: ["gpay://upi/pay", "tez://upi/pay"], store: "https://apps.apple.com/in/app/google-pay/id1193357041", color: Color(hex: 0x1A73E8)),
         UPIApp(id: "phonepe", name: "PhonePe", schemes: ["phonepe://pay", "phonepe://upi/pay"], store: "https://apps.apple.com/in/app/phonepe/id1170055821", color: Color(hex: 0x5F259F)),
@@ -1887,54 +2017,56 @@ struct ExternalPayScreen: View {
         UPIApp(id: "bhim", name: "BHIM", schemes: ["bhim://upi/pay", "upi://pay"], store: "https://apps.apple.com/in/app/bhim/id1200315258", color: Color(hex: 0x0B6E4F)),
     ]
     @State private var amount = ""
-    @State private var note = ""
+    @State private var payeeMobile = ""
     @State private var chosen: UPIApp?
     @State private var look: SafetyLookup?
     @State private var risk: RiskModel?
     @State private var pending: RiskAction?
     @State private var report: TextRoute?
     @State private var prompt: Prompt?
+    @State private var showGuide = false
+    @State private var showReceipt = false
     @State private var awaiting = false
     @State private var busy = false
     @State private var message = ""
-    @State private var finished: String?
+    @State private var saved: ReceiptBody?
+    @State private var copied = ""
     private var qr: [String: String]? { UPIQR.parse(raw) }
+    private var payeeName: String { look?.display_name ?? qr?["pn"] ?? qr?["pa"] ?? "" }
     private func installed(_ app: UPIApp) -> Bool { app.schemes.contains { s in URL(string: s).map { UIApplication.shared.canOpenURL($0) } ?? false } }
 
     var body: some View {
         ZStack {
             ScreenBackground()
-            if let finished {
-                SuccessView(ok: finished == "SUCCESS", amount: Double(amount) ?? 0, to: qr?["pn"] ?? qr?["pa"] ?? "", via: chosen?.name ?? "UPI",
-                            reference: nil, failure: "Not paid. Nothing was recorded as a payment.", onDone: onDone)
-            } else {
-                form
-            }
+            if let saved {
+                SuccessView(ok: saved.status == "SUCCESS", amount: Double(saved.amount) ?? 0, to: payeeName, via: chosen?.name ?? "UPI",
+                            reference: saved.upi_txn_id, failure: "Not paid. Nothing was recorded as a payment.",
+                            details: receiptRows(saved), onDone: onDone)
+            } else { form }
         }
-        .onAppear { if amount.isEmpty { amount = qr?["am"] ?? "" } }
+        .onAppear {
+            if amount.isEmpty { amount = qr?["am"] ?? "" }
+            if payeeMobile.isEmpty, let pa = qr?["pa"], let m = mobileFromUPI(pa) { payeeMobile = m }
+        }
         .sheet(item: $risk, onDismiss: runPending) { m in RiskSheet(model: m, payLabel: "Pay \(rupees(amount)) with \(chosen?.name ?? "UPI")") { pending = $0 } }
         .sheet(item: $report) { r in ReportSheet(ref: r.value) }
-        .onChange(of: scenePhase) { _, phase in if phase == .active && awaiting { awaiting = false; prompt = .confirm } }
-        .alert(item: $prompt) { p in
-            switch p {
-            case .confirm:
-                return Alert(title: Text("Did the payment go through?"), message: Text("UPI apps on iPhone don't report back, so confirm to save it."),
-                             primaryButton: .default(Text("Yes, I paid")) { record("SUCCESS") }, secondaryButton: .cancel(Text("No")) { record("CANCELLED") })
-            case .howTo:
-                return Alert(title: Text("UPI ID copied"),
-                             message: Text("\(qr?["pa"] ?? "")\n\nIn \(chosen?.name ?? "your UPI app"), tap \"Pay UPI ID\" (or \"To UPI ID\"), paste, and pay ₹\(amount). Then come back here."),
-                             primaryButton: .default(Text("Open \(chosen?.name ?? "app")")) { openToPaste() }, secondaryButton: .cancel())
-            case .notInstalled:
-                return Alert(title: Text("Couldn't open \(chosen?.name ?? "the app")"), message: Text("The UPI ID is copied. Paste it in any UPI app, or install this one."),
-                             primaryButton: .default(Text("Get \(chosen?.name ?? "app")")) { if let s = chosen?.store, let u = URL(string: s) { UIApplication.shared.open(u) } },
-                             secondaryButton: .cancel(Text("OK")))
+        .sheet(isPresented: $showGuide) { guide }
+        .sheet(isPresented: $showReceipt) {
+            ReceiptSheet(amount: amount, payee: qr?["pa"] ?? raw, payeeName: payeeName, app: chosen?.name ?? "UPI") { body in
+                Task { await save(body) }
             }
+        }
+        .onChange(of: scenePhase) { _, phase in if phase == .active && awaiting { awaiting = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showReceipt = true } } }
+        .alert(item: $prompt) { _ in
+            Alert(title: Text("Couldn't open \(chosen?.name ?? "the app")"), message: Text("The number is copied. Open any UPI app and paste it, or install this one."),
+                  primaryButton: .default(Text("Get \(chosen?.name ?? "app")")) { if let s = chosen?.store, let u = URL(string: s) { UIApplication.shared.open(u) } },
+                  secondaryButton: .cancel(Text("OK")))
         }
     }
 
     private var form: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 20) {
                 HStack {
                     Button(action: onDone) {
                         Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(TP.ink)
@@ -1947,45 +2079,101 @@ struct ExternalPayScreen: View {
                     Color.clear.frame(width: 44, height: 44)
                 }
                 if let qr {
-                    VStack(spacing: 8) {
-                        Avatar(name: qr["pn"] ?? qr["pa"] ?? "UP", size: 66)
-                        Text(qr["pn"] ?? qr["pa"] ?? "").font(.tp(24, .semibold)).foregroundStyle(TP.ink).multilineTextAlignment(.center)
-                        Text(qr["pa"] ?? "").font(.tp(13.5)).foregroundStyle(TP.muted)
-                    }.frame(maxWidth: .infinity).padding(.top, 6)
-                    HStack(spacing: 4) {
-                        Text("₹").font(.tp(32, .medium)).foregroundStyle(TP.faint)
-                        TextField("0", text: $amount).keyboardType(.decimalPad).font(.tp(42, .semibold)).foregroundStyle(TP.ink).monospacedDigit()
-                    }.padding(.horizontal, 20).frame(height: 82).background(TP.canvas, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    TPField(icon: "text.bubble", placeholder: "Add a note (optional)", text: $note)
-                    Caption(text: "Pay with").padding(.top, 4)
-                    VStack(spacing: 0) {
-                        ForEach(apps) { app in
-                            let ok = installed(app)
-                            Button { chosen = app; Task { await check() } } label: {
-                                HStack(spacing: 14) {
-                                    Text(String(app.name.prefix(1))).font(.tp(18, .semibold)).foregroundStyle(.white)
-                                        .frame(width: 44, height: 44).background(app.color, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(app.name).font(.tp(16, .medium)).foregroundStyle(TP.ink)
-                                        Text(ok ? "Installed" : "Tap to open").font(.tp(12.5)).foregroundStyle(ok ? TP.good : TP.muted)
+                    VStack(spacing: 10) {
+                        Avatar(name: payeeName, size: 70)
+                        Text(payeeName).font(.tp(24, .semibold)).foregroundStyle(TP.ink).multilineTextAlignment(.center)
+                        HStack(spacing: 6) {
+                            Label(qr["pa"] ?? "", systemImage: "at").font(.tp(12.5)).foregroundStyle(TP.ink2)
+                                .padding(.horizontal, 10).padding(.vertical, 6).background(TP.canvas, in: Capsule())
+                            if !payeeMobile.isEmpty {
+                                Label("+91 \(payeeMobile)", systemImage: "phone.fill").font(.tp(12.5)).foregroundStyle(TP.ink2)
+                                    .padding(.horizontal, 10).padding(.vertical, 6).background(TP.canvas, in: Capsule())
+                            }
+                        }
+                    }.frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Caption(text: "Amount")
+                        HStack(spacing: 4) {
+                            Text("₹").font(.tp(32, .medium)).foregroundStyle(TP.faint)
+                            TextField("0", text: $amount).keyboardType(.decimalPad).font(.tp(42, .semibold)).foregroundStyle(TP.ink).monospacedDigit()
+                        }.padding(.horizontal, 20).frame(height: 82).background(TP.canvas, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Caption(text: "Payee's mobile number")
+                        TPField(icon: "phone", placeholder: "10-digit mobile (to pay by phone number)", text: $payeeMobile, keyboard: .numberPad, prefix: "+91")
+                        Text(mobileFromUPI(qr["pa"] ?? "") != nil ? "Read from the UPI ID." : "Optional. With it, you can use \"Pay phone number\" in your UPI app.")
+                            .font(.tp(12)).foregroundStyle(TP.muted)
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Caption(text: "Pay with")
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible())], spacing: 12) {
+                            ForEach(apps) { app in
+                                Button { chosen = app; Task { await check() } } label: {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        HStack {
+                                            Text(String(app.name.prefix(1))).font(.tp(20, .bold)).foregroundStyle(.white)
+                                                .frame(width: 46, height: 46).background(app.color, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                            Spacer()
+                                            if busy && chosen?.id == app.id { ProgressView() } else { Image(systemName: "arrow.up.right").foregroundStyle(TP.faint) }
+                                        }
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(app.name).font(.tp(16, .semibold)).foregroundStyle(TP.ink)
+                                            Text(installed(app) ? "Installed" : "Tap to open").font(.tp(12)).foregroundStyle(installed(app) ? TP.good : TP.muted)
+                                        }
                                     }
-                                    Spacer()
-                                    if busy && chosen?.id == app.id { ProgressView() } else { Image(systemName: "chevron.right").foregroundStyle(TP.faint) }
-                                }.padding(.vertical, 12).padding(.horizontal, 16).contentShape(Rectangle())
-                            }.disabled(busy)
-                            if app.id != apps.last?.id { Divider().padding(.leading, 74) }
+                                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(chosen?.id == app.id ? app.color : TP.hair, lineWidth: chosen?.id == app.id ? 2 : 1))
+                                }.buttonStyle(PressScaleStyle()).disabled(busy)
+                            }
                         }
                     }
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(TP.hair))
                     if !message.isEmpty { Label(message, systemImage: "exclamationmark.circle.fill").font(.tp(14)).foregroundStyle(TP.bad) }
-                    Label("Your UPI PIN is only entered in your UPI app.", systemImage: "lock").font(.tp(12.5)).foregroundStyle(TP.muted)
+                    Label("trace.pay checks the account first. Your UPI PIN is only entered in your UPI app.", systemImage: "lock.shield").font(.tp(12.5)).foregroundStyle(TP.muted)
                 } else {
                     Text("This QR has no valid UPI ID.").font(.tp(15)).foregroundStyle(TP.bad)
                 }
             }.padding(22)
         }
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// Step-by-step: copy the phone number (or UPI ID), open the app, pay there, come back.
+    private var guide: some View {
+        let mobile = payeeMobile.filter(\.isNumber)
+        return ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                Caption(text: "Pay in \(chosen?.name ?? "your UPI app")").padding(.top, 28)
+                Text("Three quick steps").font(.tp(26, .semibold)).foregroundStyle(TP.ink)
+                guideStep(1, mobile.count == 10 ? "Copy the phone number" : "Copy the UPI ID",
+                          mobile.count == 10 ? "+91 \(mobile)" : (qr?["pa"] ?? ""), copyValue: mobile.count == 10 ? mobile : (qr?["pa"] ?? ""))
+                if mobile.count == 10 { guideStep(nil, "Or copy the UPI ID", qr?["pa"] ?? "", copyValue: qr?["pa"] ?? "") }
+                guideStep(2, "Open \(chosen?.name ?? "the app") and choose \(mobile.count == 10 ? "\"Pay phone number\"" : "\"Pay UPI ID\"")", "Paste, then pay \(rupees(amount)) with your PIN.", copyValue: nil)
+                guideStep(3, "Come back to trace.pay", "Add the payment screenshot and we'll save every detail.", copyValue: nil)
+                if !copied.isEmpty { Label("Copied \(copied)", systemImage: "checkmark.circle.fill").font(.tp(13, .medium)).foregroundStyle(TP.good) }
+                Button { showGuide = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { openApp(copy: mobile.count == 10 ? mobile : (qr?["pa"] ?? "")) } } label: {
+                    Label("Open \(chosen?.name ?? "app")", systemImage: "arrow.up.right")
+                }.buttonStyle(NeoButtonStyle())
+            }.padding(.horizontal, 22).padding(.bottom, 24)
+        }.presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+    private func guideStep(_ n: Int?, _ title: String, _ sub: String, copyValue: String?) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Text(n.map(String.init) ?? "·").font(.tp(15, .bold)).foregroundStyle(n == nil ? TP.muted : .white)
+                .frame(width: 32, height: 32).background(n == nil ? TP.canvas : TP.ink, in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.tp(15, .semibold)).foregroundStyle(TP.ink)
+                Text(sub).font(.tp(13)).foregroundStyle(TP.muted).textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+            if let copyValue, !copyValue.isEmpty {
+                Button { UIPasteboard.general.string = copyValue; copied = copyValue; Haptic.tap() } label: {
+                    Label("Copy", systemImage: "doc.on.doc").font(.tp(13, .semibold)).foregroundStyle(TP.violet)
+                        .padding(.horizontal, 12).padding(.vertical, 8).background(TP.violetSoft, in: Capsule())
+                }
+            }
+        }.padding(14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
     }
 
     @MainActor private func check() async {
@@ -1997,34 +2185,15 @@ struct ExternalPayScreen: View {
     private func runPending() {
         let action = pending; pending = nil
         switch action {
-        case .pay:
-            UIPasteboard.general.string = qr?["pa"]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { prompt = .howTo }
+        case .pay: DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showGuide = true }
         case .report: report = TextRoute(value: qr?["pa"] ?? raw)
         case .none: break
         }
     }
 
-    /// Open the chosen UPI app with the payment details. Each known link is tried in turn (iOS reports success only if
-    /// an app actually opened); if none accept payment links, the app itself is opened so the person can scan there.
-    private func launch() {
-        guard let qr, let app = chosen else { return }
-        let items = [URLQueryItem(name: "pa", value: qr["pa"]), URLQueryItem(name: "pn", value: look?.display_name ?? qr["pn"] ?? qr["pa"]),
-                     URLQueryItem(name: "am", value: amount), URLQueryItem(name: "cu", value: "INR"),
-                     URLQueryItem(name: "tn", value: note.isEmpty ? (qr["tn"] ?? "Checked with trace.pay") : note)]
-        var urls: [URL] = app.schemes.compactMap { s in var c = URLComponents(string: s); c?.queryItems = items; return c?.url }
-        var generic = URLComponents(string: "upi://pay"); generic?.queryItems = items
-        if let g = generic?.url { urls.append(g) }
-        let roots: [URL] = app.schemes.compactMap { s in s.components(separatedBy: "://").first.flatMap { URL(string: $0 + "://") } }
-        UIPasteboard.general.string = qr["pa"]
-        tryOpen(urls + roots, index: 0)
-    }
-
-    /// Recommended: open the UPI app's home screen with the UPI ID on the clipboard, so the payment starts inside the app
-    /// as "pay to UPI ID" (UPI apps restrict or decline ready-made payment links sent by other apps).
-    private func openToPaste() {
-        guard let qr, let app = chosen else { return }
-        UIPasteboard.general.string = qr["pa"]
+    private func openApp(copy value: String) {
+        guard let app = chosen else { return }
+        UIPasteboard.general.string = value
         let roots: [URL] = app.schemes.compactMap { s in s.components(separatedBy: "://").first.flatMap { URL(string: $0 + "://") } }
         tryOpen(roots, index: 0)
     }
@@ -2036,15 +2205,127 @@ struct ExternalPayScreen: View {
         }
     }
 
-    private func record(_ status: String) {
-        guard let qr else { return }
-        Task {
-            do {
-                try await session.recordExternalPayment(ExternalPaymentBody(payee: qr["pa"] ?? raw, payee_name: look?.display_name ?? qr["pn"], amount: amount,
-                    app: chosen?.id ?? "upi", status: status, source: "manual", upi_txn_id: nil, risk_score: look?.score, risk_band: look?.band))
-                finished = status
-            } catch { message = error.localizedDescription }
+    private func receiptRows(_ r: ReceiptBody) -> [(String, String)] {
+        var rows: [(String, String)] = [("Amount", rupees(r.amount)), ("Paid to", payeeName), ("UPI ID", r.payee)]
+        if let m = r.payee_mobile, !m.isEmpty { rows.append(("Mobile", "+91 \(m)")) }
+        if let p = r.paid_at { rows.append(("Date & time", parseDate(p).formatted(date: .abbreviated, time: .shortened))) }
+        rows.append(("App", chosen?.name ?? "UPI"))
+        if let s = look?.score { rows.append(("Risk at payment", "\(s)% · \(Risk.label(look?.band ?? ""))")) }
+        return rows
+    }
+
+    @MainActor private func save(_ body: ReceiptBody) async {
+        let full = ReceiptBody(payee: body.payee, payee_name: payeeName, amount: body.amount, app: chosen?.id ?? "upi", status: body.status, source: body.source,
+                               upi_txn_id: body.upi_txn_id, risk_score: look?.score, risk_band: look?.band, paid_at: body.paid_at,
+                               payee_mobile: payeeMobile.filter(\.isNumber).isEmpty ? nil : payeeMobile.filter(\.isNumber))
+        do { try await session.recordReceipt(full); saved = full; showReceipt = false } catch { message = error.localizedDescription; showReceipt = false }
+    }
+}
+
+// MARK: - Payment receipt: read the payment screenshot (on-device text recognition) and save every detail
+
+struct ReceiptSheet: View {
+    let amount: String
+    let payee: String
+    let payeeName: String
+    let app: String
+    let onSave: (ReceiptBody) -> Void
+    @State private var picked: PhotosPickerItem?
+    @State private var image: UIImage?
+    @State private var reading = false
+    @State private var amt = ""
+    @State private var utr = ""
+    @State private var paidAt = Date()
+    @State private var success = true
+    @State private var note = ""
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                Caption(text: "Payment receipt").padding(.top, 28)
+                Text("Did the payment go through?").font(.tp(26, .semibold)).foregroundStyle(TP.ink)
+                Text("Add the payment screenshot from \(app). We'll read the amount, reference and time from it.").font(.tp(14.5)).foregroundStyle(TP.muted)
+                PhotosPicker(selection: $picked, matching: .screenshots) {
+                    HStack(spacing: 14) {
+                        if let image { Image(uiImage: image).resizable().scaledToFill().frame(width: 54, height: 90).clipShape(RoundedRectangle(cornerRadius: 10)) }
+                        else { Image(systemName: "photo.badge.plus").font(.system(size: 22)).foregroundStyle(TP.violet).frame(width: 54, height: 54).background(TP.violetSoft, in: RoundedRectangle(cornerRadius: 14)) }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(image == nil ? "Choose the screenshot" : "Screenshot added").font(.tp(15, .semibold)).foregroundStyle(TP.ink)
+                            Text(reading ? "Reading the details…" : image == nil ? "From your Photos" : note).font(.tp(12.5)).foregroundStyle(TP.muted)
+                        }
+                        Spacer(minLength: 0)
+                        if reading { ProgressView() }
+                    }.padding(14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
+                }
+                VStack(spacing: 12) {
+                    TPField(icon: "indianrupeesign", placeholder: "Amount", text: $amt, keyboard: .decimalPad)
+                    TPField(icon: "number", placeholder: "UPI reference / UTR (12 digits)", text: $utr, keyboard: .numberPad)
+                    HStack {
+                        Image(systemName: "calendar").foregroundStyle(TP.faint).frame(width: 22)
+                        Text("Paid at").font(.tp(16, .medium)).foregroundStyle(TP.muted)
+                        Spacer()
+                        DatePicker("", selection: $paidAt).labelsHidden().tint(TP.violet)
+                    }.padding(.horizontal, 18).frame(height: 58).background(TP.canvas, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    SegmentSwitch(options: [("checkmark.circle", "Successful"), ("xmark.circle", "Failed")], selection: Binding(get: { success ? 0 : 1 }, set: { success = $0 == 0 }))
+                }
+                Button { onSave(body(status: success ? "SUCCESS" : "FAILURE", source: image == nil ? "manual" : "receipt")) } label: { Label("Save payment", systemImage: "checkmark") }
+                    .buttonStyle(NeoButtonStyle()).disabled(Decimal(string: amt) == nil)
+                Button { onSave(body(status: "CANCELLED", source: "manual")) } label: { Text("I didn't pay") }.buttonStyle(NeoButtonStyle(kind: .white))
+            }.padding(.horizontal, 22).padding(.bottom, 24)
         }
+        .presentationDetents([.large]).presentationDragIndicator(.visible).interactiveDismissDisabled()
+        .onAppear { if amt.isEmpty { amt = amount } }
+        .onChange(of: picked) { _, item in Task { await load(item) } }
+    }
+    private func body(status: String, source: String) -> ReceiptBody {
+        let iso = ISO8601DateFormatter()
+        return ReceiptBody(payee: payee, payee_name: payeeName, amount: amt, app: app, status: status, source: source == "receipt" ? "manual" : source,
+                           upi_txn_id: utr.isEmpty ? nil : utr, risk_score: nil, risk_band: nil, paid_at: iso.string(from: paidAt), payee_mobile: nil)
+    }
+    @MainActor private func load(_ item: PhotosPickerItem?) async {
+        guard let item, let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data) else { return }
+        image = img; reading = true; defer { reading = false }
+        let text = await ReceiptReader.text(in: img)
+        let found = ReceiptReader.parse(text)
+        if let a = found.amount { amt = a }
+        if let u = found.utr { utr = u }
+        if let d = found.date { paidAt = d }
+        if let s = found.success { success = s }
+        note = [found.amount.map { "₹\($0)" }, found.utr.map { "Ref \($0)" }, found.date.map { $0.formatted(date: .abbreviated, time: .shortened) }].compactMap { $0 }.joined(separator: " · ")
+        if note.isEmpty { note = "Couldn't read details. Fill them in below." }
+    }
+}
+
+enum ReceiptReader {
+    static func text(in image: UIImage) async -> String {
+        guard let cg = image.cgImage else { return "" }
+        return await withCheckedContinuation { cont in
+            let request = VNRecognizeTextRequest { req, _ in
+                let lines = (req.results as? [VNRecognizedTextObservation])?.compactMap { $0.topCandidates(1).first?.string } ?? []
+                cont.resume(returning: lines.joined(separator: "\n"))
+            }
+            request.recognitionLevel = .accurate
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { try VNImageRequestHandler(cgImage: cg, options: [:]).perform([request]) } catch { cont.resume(returning: "") }
+            }
+        }
+    }
+    static func parse(_ text: String) -> (amount: String?, utr: String?, date: Date?, success: Bool?) {
+        func first(_ pattern: String) -> String? {
+            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: text) else { return nil }
+            return String(text[r])
+        }
+        let amount = first(#"(?:₹|rs\.?|inr)\s?([0-9][0-9,]*(?:\.[0-9]{1,2})?)"#)?.replacingOccurrences(of: ",", with: "")
+        let utr = first(#"(?:utr|upi\s*(?:transaction\s*)?(?:id|ref(?:erence)?(?:\s*no\.?)?)|transaction\s*id|ref(?:erence)?\s*(?:no|number)?)[^0-9]{0,24}([0-9]{12})"#) ?? first(#"\b([0-9]{12})\b"#)
+        var date: Date?
+        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) {
+            date = detector.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))?.date
+        }
+        let lower = text.lowercased()
+        let success: Bool? = lower.contains("failed") || lower.contains("declined") ? false : (lower.contains("success") || lower.contains("paid") || lower.contains("completed") ? true : nil)
+        return (amount, utr, date, success)
     }
 }
 
@@ -2174,20 +2455,7 @@ struct VerifyEmailSheet: View {
                 if done {
                     Button("Done") { dismiss() }.buttonStyle(NeoButtonStyle())
                 } else {
-                    ZStack {
-                        TextField("", text: $code).keyboardType(.numberPad).textContentType(.oneTimeCode)
-                            .foregroundStyle(.clear).tint(.clear).frame(height: 64)
-                            .onChange(of: code) { _, v in code = String(v.filter(\.isNumber).prefix(6)) }
-                        HStack(spacing: 8) {
-                            ForEach(0..<6, id: \.self) { i in
-                                let chars = Array(code)
-                                Text(i < chars.count ? String(chars[i]) : "").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
-                                    .frame(maxWidth: .infinity, minHeight: 62)
-                                    .background(TP.canvas, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(i == chars.count ? TP.violet : .clear, lineWidth: 1.5))
-                            }
-                        }.allowsHitTesting(false)
-                    }
+                    OTPCodeField(code: $code)
                     if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) }
                     Button { Task { await verify() } } label: { if busy { ProgressView().tint(.white) } else { Text("Verify email") } }
                         .buttonStyle(NeoButtonStyle()).disabled(busy || code.count != 6).opacity(code.count == 6 ? 1 : 0.5)
@@ -2210,5 +2478,145 @@ struct VerifyEmailSheet: View {
         busy = true; message = ""; defer { busy = false }
         do { try await session.verifyEmailCode(code); Haptic.success(); withAnimation { done = true }; onVerified() }
         catch { message = error.localizedDescription; Haptic.error() }
+    }
+}
+
+// MARK: - 6.1 components
+
+/// Six polished code boxes over one hidden field: auto-fills from SMS/Mail, supports paste, animates as digits arrive.
+struct OTPCodeField: View {
+    @Binding var code: String
+    @FocusState private var focused: Bool
+    var body: some View {
+        ZStack {
+            TextField("", text: $code).keyboardType(.numberPad).textContentType(.oneTimeCode).focused($focused)
+                .foregroundStyle(.clear).tint(.clear).frame(height: 66)
+                .onChange(of: code) { _, v in let c = String(v.filter(\.isNumber).prefix(6)); if c != v { code = c } }
+            HStack(spacing: 8) {
+                ForEach(0..<6, id: \.self) { i in
+                    let chars = Array(code)
+                    let filled = i < chars.count
+                    let active = focused && i == chars.count
+                    Text(filled ? String(chars[i]) : "").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
+                        .frame(maxWidth: .infinity, minHeight: 64)
+                        .background(filled ? Color.white : TP.canvas, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(active ? TP.violet : (filled ? TP.hair : .clear), lineWidth: active ? 2 : 1))
+                        .shadow(color: filled ? TP.ink.opacity(0.06) : .clear, radius: 6, y: 3)
+                        .scaleEffect(filled ? 1 : 0.97)
+                        .animation(.spring(response: 0.25, dampingFraction: 0.6), value: code)
+                }
+            }.allowsHitTesting(false)
+        }
+        .contentShape(Rectangle()).onTapGesture { focused = true }
+        .onAppear { focused = true }
+    }
+}
+
+struct ForgotPasswordSheet: View {
+    @EnvironmentObject private var session: TracePaySession
+    @Environment(\.dismiss) private var dismiss
+    @State private var method = 0
+    @State private var mobile = ""
+    @State private var email = ""
+    @State private var sent = false
+    @State private var code = ""
+    @State private var password = ""
+    @State private var confirm = ""
+    @State private var busy = false
+    @State private var message = ""
+    @State private var done = false
+    private var identifier: String { method == 0 ? String(mobile.filter(\.isNumber).suffix(10)) : email.trimmingCharacters(in: .whitespaces).lowercased() }
+    private var strong: Bool { password.count >= 8 && password.contains(where: \.isUppercase) && password.contains(where: \.isNumber) && password.contains(where: { !$0.isLetter && !$0.isNumber }) }
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: done ? "checkmark.seal.fill" : "key.fill").font(.system(size: 24)).foregroundStyle(done ? TP.good : TP.violet)
+                    .frame(width: 58, height: 58).background(done ? TP.goodBg : TP.violetSoft, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).padding(.top, 28)
+                Text(done ? "Password updated" : sent ? "Reset your password" : "Forgot password?").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
+                Text(done ? "Sign in with your new password." : sent ? "Enter the code we sent to \(method == 0 ? "+91 \(identifier)" : identifier), then choose a new password." : "We'll send a code to your mobile number or email.")
+                    .font(.tp(15)).foregroundStyle(TP.muted)
+                if done {
+                    Button("Back to sign in") { dismiss() }.buttonStyle(NeoButtonStyle())
+                } else if !sent {
+                    SegmentSwitch(options: [("iphone", "Mobile"), ("envelope", "Email")], selection: $method)
+                    if method == 0 { TPField(icon: "iphone", placeholder: "10-digit mobile number", text: $mobile, keyboard: .numberPad, prefix: "+91") }
+                    else { TPField(icon: "envelope", placeholder: "Email", text: $email, keyboard: .emailAddress) }
+                    if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) }
+                    Button { Task { await send() } } label: { if busy { ProgressView().tint(.white) } else { Text("Send code") } }
+                        .buttonStyle(NeoButtonStyle()).disabled(busy || identifier.count < 5)
+                } else {
+                    OTPCodeField(code: $code)
+                    TPField(icon: "lock", placeholder: "New password (8+ characters)", text: $password, secure: true)
+                    TPField(icon: "lock", placeholder: "Confirm new password", text: $confirm, secure: true)
+                    Text("Use 8+ characters with an uppercase letter, a number and a symbol.").font(.tp(12.5)).foregroundStyle(strong ? TP.good : TP.muted)
+                    if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) }
+                    Button { Task { await reset() } } label: { if busy { ProgressView().tint(.white) } else { Text("Update password") } }
+                        .buttonStyle(NeoButtonStyle()).disabled(busy || code.count != 6 || !strong || password != confirm)
+                    Button("Send a new code") { Task { await send() } }.font(.tp(14.5, .medium)).foregroundStyle(TP.violet).frame(maxWidth: .infinity)
+                }
+            }.padding(.horizontal, 22).padding(.bottom, 24)
+        }.presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+    @MainActor private func send() async {
+        busy = true; message = ""; defer { busy = false }
+        do { try await session.forgotPassword(identifier: identifier); sent = true } catch { message = error.localizedDescription }
+    }
+    @MainActor private func reset() async {
+        busy = true; message = ""; defer { busy = false }
+        do { try await session.resetPassword(identifier: identifier, code: code, newPassword: password); done = true; Haptic.success() }
+        catch { message = error.localizedDescription; Haptic.error() }
+    }
+}
+
+/// "How the score works": every rule, its points and the bands (from the server, so it always matches the real model).
+struct ScoringInfoSheet: View {
+    @EnvironmentObject private var session: TracePaySession
+    @State private var model: ScoringModel?
+    @State private var message = ""
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                Caption(text: "TraceScore").padding(.top, 28)
+                Text("How the score works").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
+                if let model {
+                    Text(model.summary).font(.tp(15)).foregroundStyle(TP.ink2)
+                    VStack(spacing: 0) {
+                        ForEach(model.bands) { b in
+                            HStack(spacing: 12) {
+                                Text(b.range).font(.tp(14, .bold)).foregroundStyle(Risk.color(b.band)).frame(width: 64, alignment: .leading).monospacedDigit()
+                                VStack(alignment: .leading, spacing: 1) { Text(b.label).font(.tp(14.5, .semibold)).foregroundStyle(TP.ink); Text(b.meaning).font(.tp(12.5)).foregroundStyle(TP.muted) }
+                                Spacer(minLength: 0)
+                            }.padding(.vertical, 10)
+                            if b.id != model.bands.last?.id { Divider() }
+                        }
+                    }.padding(.horizontal, 14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
+                    ruleList("Payment behaviour", model.signals)
+                    ruleList("Reports and trust", model.community)
+                    Label(model.window, systemImage: "clock").font(.tp(12.5)).foregroundStyle(TP.muted)
+                } else if !message.isEmpty {
+                    Text(message).font(.tp(14)).foregroundStyle(TP.bad)
+                } else { ProgressView().frame(maxWidth: .infinity).padding(.top, 30) }
+            }.padding(.horizontal, 22).padding(.bottom, 24)
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .task { do { model = try await session.scoringModel() } catch { message = error.localizedDescription } }
+    }
+    private func ruleList(_ title: String, _ rules: [ScoringRule]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Caption(text: title)
+            VStack(spacing: 0) {
+                ForEach(rules) { r in
+                    let lowers = r.pointsText.hasPrefix("-")
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: Risk.icon(r.code)).font(.system(size: 14, weight: .semibold)).foregroundStyle(lowers ? TP.good : TP.violet)
+                            .frame(width: 34, height: 34).background(lowers ? TP.goodBg : TP.violetSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) { Text(r.label).font(.tp(14.5, .semibold)).foregroundStyle(TP.ink); Text(r.rule).font(.tp(12.5)).foregroundStyle(TP.muted).fixedSize(horizontal: false, vertical: true) }
+                        Spacer(minLength: 6)
+                        Text(r.pointsText).font(.tp(13, .bold)).foregroundStyle(lowers ? TP.good : TP.bad).multilineTextAlignment(.trailing)
+                    }.padding(.vertical, 10)
+                    if r.id != rules.last?.id { Divider() }
+                }
+            }.padding(.horizontal, 14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
+        }
     }
 }

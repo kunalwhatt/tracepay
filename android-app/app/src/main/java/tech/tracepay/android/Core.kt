@@ -106,6 +106,9 @@ data class RiskReport(val name: String, val ref: String, val member: Boolean, va
 
 class ApiError(message: String, val code: Int) : Exception(message)
 
+/** The signed-in connection, for screens that need it without passing it through every layer (e.g. the scoring rules sheet). */
+object CurrentApi { var api: TraceApi? = null }
+
 private fun JSONObject.str(k: String): String = if (isNull(k)) "" else optString(k)
 
 class TraceApi(private val context: Context) {
@@ -208,9 +211,11 @@ class TraceApi(private val context: Context) {
         val o = JSONObject(call("/api/v1/pilot/transfers", "POST", JSONObject().put("receiver_vpa", vpa).put("amount", amount).put("note", "").put("idempotency_key", key).toString()))
         return Transfer(o.str("transfer_ref"), o.str("sender_vpa"), o.str("receiver_vpa"), o.str("amount"), o.str("status"), o.str("created_at"), o.str("failure_reason"))
     }
-    suspend fun recordExternal(payee: String, name: String?, amount: String, app: String, status: String, source: String, txn: String?, score: Int?, band: String?) {
+    suspend fun recordExternal(payee: String, name: String?, amount: String, app: String, status: String, source: String, txn: String?, score: Int?, band: String?,
+                               paidAt: String? = null, payeeMobile: String? = null) {
         val b = JSONObject().put("payee", payee).put("amount", amount).put("app", app).put("status", status).put("source", source)
         name?.let { b.put("payee_name", it) }; txn?.let { b.put("upi_txn_id", it) }; score?.let { b.put("risk_score", it) }; band?.let { b.put("risk_band", it) }
+        paidAt?.let { b.put("paid_at", it) }; payeeMobile?.takeIf { it.isNotBlank() }?.let { b.put("payee_mobile", it) }
         call("/api/v1/external-payments", "POST", b.toString())
     }
     suspend fun report(ref: String, category: String, details: String, amount: String) {
@@ -223,6 +228,22 @@ class TraceApi(private val context: Context) {
         val o = JSONObject(call("/api/v1/auth/email/status"))
         return Pair(o.optBoolean("required") && !o.optBoolean("verified"), o.str("email"))
     }
+    // Sign-up verification (before the account exists), forgot password, scoring rules
+    suspend fun startVerification(channel: String, target: String, name: String) {
+        call("/api/v1/auth/verify/start", "POST", JSONObject().put("channel", channel).put("target", target).put("full_name", name).toString())
+    }
+    suspend fun checkVerification(channel: String, target: String, code: String): String =
+        JSONObject(call("/api/v1/auth/verify/check", "POST", JSONObject().put("channel", channel).put("target", target).put("code", code).toString())).getString("ticket")
+    suspend fun signUpVerified(email: String, mobile: String, password: String, emailTicket: String, smsTicket: String) {
+        call("/api/v1/auth/register", "POST", JSONObject().put("email", email.trim().lowercase()).put("mobile", mobile).put("password", password)
+            .put("email_ticket", emailTicket).put("sms_ticket", smsTicket).toString())
+        signIn(email, password)
+    }
+    suspend fun forgotPassword(identifier: String) { call("/api/v1/auth/password/forgot", "POST", JSONObject().put("identifier", identifier).toString()) }
+    suspend fun resetPassword(identifier: String, code: String, newPassword: String) {
+        call("/api/v1/auth/password/reset", "POST", JSONObject().put("identifier", identifier).put("code", code).put("new_password", newPassword).toString())
+    }
+    suspend fun scoringModel(): JSONObject = JSONObject(call("/api/v1/scoring/model"))
     suspend fun sendEmailCode(name: String) { call("/api/v1/auth/email/send-otp", "POST", JSONObject().put("full_name", name).toString()) }
     suspend fun verifyEmailCode(code: String) { call("/api/v1/auth/email/verify-otp", "POST", JSONObject().put("code", code).toString()) }
 }
@@ -245,9 +266,9 @@ fun parseUpiQr(raw: String): Map<String, String>? {
     if (!Regex("^[a-z0-9][a-z0-9._-]{1,63}@[a-z][a-z0-9.]{1,40}$").matches(vpa)) return null
     val out = mutableMapOf("pa" to vpa)
     if (isLink) {
-        uri?.getQueryParameter("pn")?.let { out["pn"] = it }
+        uri?.getQueryParameter("pn")?.let { out["pn"] = it.replace('+', ' ').trim() }
         uri?.getQueryParameter("am")?.let { out["am"] = it }
-        uri?.getQueryParameter("tn")?.let { out["tn"] = it }
+        uri?.getQueryParameter("tn")?.let { out["tn"] = it.replace('+', ' ').trim() }
     }
     return out
 }

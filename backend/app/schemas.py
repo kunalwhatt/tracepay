@@ -15,10 +15,13 @@ def normalize_mobile(value: str | None) -> str | None:
 
 
 class RegisterIn(BaseModel):
-    """Sign up with an email or a mobile number (one is required). No OTP."""
+    """Sign up with an email and/or a mobile number. When Supabase is configured, both are required and each must
+    carry a verification ticket from /auth/verify/check."""
     email: EmailStr | None = None
     mobile: str | None = Field(default=None, max_length=20)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+    email_ticket: str | None = Field(default=None, max_length=2000)
+    sms_ticket: str | None = Field(default=None, max_length=2000)
 
     @field_validator("mobile")
     @classmethod
