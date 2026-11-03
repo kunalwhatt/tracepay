@@ -549,7 +549,7 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
             busy = false
         }
     }
-    if (camera) { FaceCaptureScreen(onCaptured = { f -> photo = try { normalizeSelfie(ctx, f) } catch (_: Exception) { f }; camera = false }, onCancel = { camera = false }); return }
+    if (camera) { TraceIdScreen(api, onDone = { f -> photo = f; camera = false }, onCancel = { camera = false }); return }
     if (showDate) {
         val state = rememberDatePickerState(initialSelectedDateMillis = dob ?: (System.currentTimeMillis() - 21L * 365 * 24 * 3600 * 1000))
         DatePickerDialog(onDismissRequest = { showDate = false }, confirmButton = { TextButton({ dob = state.selectedDateMillis; showDate = false }) { Text("Done") } }) { DatePicker(state) }
@@ -570,8 +570,8 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
         Row(Modifier.fillMaxWidth()) { Spacer(Modifier.weight(1f)); TText("Step $step of $total", 13.sp, color = TP.muted) }
         Spacer(Modifier.height(12.dp)); ProgressSteps(step, total)
         Caption(listOf("About you", "Identity", "Device lock", "Verify email")[step - 1], Modifier.padding(top = 24.dp))
-        TText(listOf("Tell us about you", "Take a live selfie", "Lock trace.pay with your phone", "Check your email")[step - 1], 30.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp), lineHeight = 35.sp)
-        TText(listOf("Used for your trace.pay profile.", "Encrypted and only checked for one clear face.", "We use the lock you already have. Nothing new to remember.",
+        TText(listOf("Tell us about you", "Record your TraceID", "Lock trace.pay with your phone", "Check your email")[step - 1], 30.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp), lineHeight = 35.sp)
+        TText(listOf("Used for your trace.pay profile.", "A 5-second video: blink twice so we know it's really you. One person, one trace.pay ID.", "We use the lock you already have. Nothing new to remember.",
             "We sent a 6-digit code to ${api.identifier}.")[step - 1], 15.sp, color = TP.muted, modifier = Modifier.padding(top = 6.dp, bottom = 24.dp))
         when (step) {
             1 -> {
@@ -599,19 +599,18 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
                 Box(Modifier.fillMaxWidth().height(290.dp).clip(RoundedCornerShape(28.dp)).background(Brush.verticalGradient(listOf(TP.violetSoft, Color.White)))
                     .border(1.dp, TP.hair, RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) {
                     val p = photo
+                    PixelField(TP.violet, Modifier.fillMaxSize())
                     if (p != null) {
-                        val bmp = remember(p) { android.graphics.BitmapFactory.decodeFile(p.absolutePath) }
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (bmp != null) Image(bmp.asImageBitmap(), "Your selfie", Modifier.size(170.dp, 214.dp).clip(RoundedCornerShape(100.dp)).border(4.dp, TP.good, RoundedCornerShape(100.dp)),
-                                contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                            TText("Clear face captured", 14.sp, FontWeight.SemiBold, TP.good, Modifier.padding(top = 12.dp).clip(CircleShape).background(TP.goodBg).padding(horizontal = 12.dp, vertical = 6.dp))
+                            Box(Modifier.size(150.dp).clip(CircleShape).background(Color.White), contentAlignment = Alignment.Center) { Icon(Icons.Default.Verified, null, tint = TP.good, modifier = Modifier.size(76.dp)) }
+                            TText("Live person confirmed", 14.sp, FontWeight.SemiBold, TP.good, Modifier.padding(top = 12.dp).clip(CircleShape).background(TP.goodBg).padding(horizontal = 12.dp, vertical = 6.dp))
                         }
                     } else {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(Modifier.size(150.dp, 190.dp).border(3.dp, TP.violet.copy(alpha = .35f), RoundedCornerShape(100.dp)), contentAlignment = Alignment.Center) {
                                 Icon(Icons.Default.Face, null, tint = TP.violet, modifier = Modifier.size(70.dp))
                             }
-                            TText("Your face goes inside the oval", 14.sp, FontWeight.Medium, TP.ink2, Modifier.padding(top = 12.dp))
+                            TText("5 seconds · blink twice", 14.sp, FontWeight.Medium, TP.ink2, Modifier.padding(top = 12.dp))
                         }
                     }
                 }
@@ -619,8 +618,9 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
                 CardBox(padding = 16.dp) {
                     listOf(Triple(Icons.Default.WbSunny, "Good light", "Face a window or a lamp; avoid strong light behind you."),
                         Triple(Icons.Default.FaceRetouchingOff, "Nothing covering your face", "Take off sunglasses, masks and caps."),
-                        Triple(Icons.Default.PanTool, "Hold still", "The photo is taken automatically when your face is clear."),
-                        Triple(Icons.Default.Lock, "Private", "Encrypted, and only checked for one clear face.")).forEach { (ic, t, d) ->
+                        Triple(Icons.Default.Visibility, "Blink twice slowly", "Recording starts when your face is centred and lasts 5 seconds."),
+                        Triple(Icons.Default.PersonOff, "One person, one ID", "Your face is matched so nobody can open a second account in your name."),
+                        Triple(Icons.Default.Lock, "Private", "Encrypted, and used only for this check.")).forEach { (ic, t, d) ->
                         Row(Modifier.padding(vertical = 6.dp)) {
                             IconSquare(ic, size = 32.dp); Spacer(Modifier.width(12.dp))
                             Column { TText(t, 14.sp, FontWeight.SemiBold); TText(d, 12.5.sp, color = TP.muted, lineHeight = 17.sp) }
@@ -628,7 +628,7 @@ fun SetupFlow(api: TraceApi, activity: MainActivity, onDone: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                NeoButton(if (photo == null) "Open camera" else "Retake selfie", kind = if (photo == null) NeoKind.Violet else NeoKind.White, icon = Icons.Default.CameraAlt) { camera = true }
+                NeoButton(if (photo == null) "Record 5-second video" else "Record again", kind = if (photo == null) NeoKind.Violet else NeoKind.White, icon = Icons.Default.Videocam) { camera = true }
             }
             3 -> {
                 Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {

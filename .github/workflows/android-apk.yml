@@ -28,22 +28,22 @@ jobs:
             echo "::warning::ANDROID_KEYSTORE_BASE64 secret is missing: this APK can't update an installed app."
           fi
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "TP_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
-          echo "TP_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "TP_VERSION_CODE=$((1100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
       - name: Build APK
         working-directory: android-app
         env:
           TP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: gradle :app:assembleDebug --no-daemon --stacktrace
-      - name: Name the APK
-        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk tracepay.apk
+      - name: Name the APK (tracepay-<build>.apk, used by the in-app updater)
+        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk "tracepay-${TP_VERSION_CODE}.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: tracepay-android-apk
-          path: tracepay.apk
+          path: tracepay-*.apk
       - name: Publish release (version tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: tracepay.apk
+          files: tracepay-*.apk
           name: trace.pay ${{ github.ref_name }}
           generate_release_notes: true

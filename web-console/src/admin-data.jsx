@@ -43,7 +43,9 @@ export default function AccountsData({token, setToast, setError}) {
         <span className="acx-who"><i><UserRound size={16}/></i><span><b>{r.name || r.email || r.mobile || `Account ${r.id}`}</b>
           <small>{[r.vpa_id, r.email, r.role !== 'pilot_user' ? r.role : null].filter(Boolean).join(' · ') || 'No profile yet'}</small>
           {r.email_verified === true && <em className="acx-ok"><BadgeCheck size={12}/> Email verified</em>}
-          {r.email_verified === false && <em className="acx-no"><MailWarning size={12}/> Email not verified · payments blocked</em>}</span></span>
+          {r.email_verified === false && <em className="acx-no"><MailWarning size={12}/> Email not verified · payments blocked</em>}
+          {r.liveness && <em className="acx-ok"><BadgeCheck size={12}/> TraceID {r.liveness.startsWith('video') ? 'live video' : 'photo'}</em>}
+          {r.identity_review && <em className="acx-no"><MailWarning size={12}/> Possible duplicate person · review</em>}</span></span>
         <span>{r.mobile ? <b className="mono">+91 {r.mobile}</b> : <span className="acx-pill">Not linked</span>}</span>
         <span className="gx-fine">{r.transfers} payments · {r.external_payments} external · {r.logs} logs</span>
         <span className="acx-actions">

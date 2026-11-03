@@ -335,7 +335,9 @@ final class TracePaySession: ObservableObject {
         }
         field("full_name", fullName); field("date_of_birth", dateOfBirth); field("gender", gender)
         field("consent_profile", consentProfile ? "true" : "false"); field("consent_pilot_ledger", consentLedger ? "true" : "false")
-        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"face_photo\"; filename=\"profile.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".utf8))
+        let isVideo = photoData.count > 12 && photoData.subdata(in: 4..<8) == Data("ftyp".utf8)
+        body.append(Data((isVideo ? "--\(boundary)\r\nContent-Disposition: form-data; name=\"face_video\"; filename=\"traceid.mp4\"\r\nContent-Type: video/mp4\r\n\r\n"
+                                  : "--\(boundary)\r\nContent-Disposition: form-data; name=\"face_photo\"; filename=\"profile.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n").utf8))
         body.append(photoData); body.append(Data("\r\n--\(boundary)--\r\n".utf8)); request.httpBody = body
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
@@ -488,7 +490,9 @@ struct SafetyLookup: Decodable, Identifiable, Hashable {
     let score: Int?; let band: String; let verdict: SafetyVerdict; let factors: [SafetyFactor]
     let confidence: Double; let counterfactuals: [String]; let reports: Int; let records: Int
     let qrName: String?; let qrAmount: String?; let shield: ShieldInfo?
-    private enum K: String, CodingKey { case ref, display_name, member, merchant, score, band, verdict, factors, confidence, counterfactuals, community, history, qr, shield }
+    let coolingSeconds: Int; let stage: LifecycleStage?; let badge: MerchantBadge?; let nameMismatch: Bool
+    private enum K: String, CodingKey { case ref, display_name, member, merchant, score, band, verdict, factors, confidence, counterfactuals, community, history, qr, shield,
+                                        cooling_seconds, stage, badge, name_mismatch }
     private enum CK: String, CodingKey { case reports }
     private enum HK: String, CodingKey { case records }
     private enum QK: String, CodingKey { case name, amount }
@@ -510,6 +514,10 @@ struct SafetyLookup: Decodable, Identifiable, Hashable {
         qrName = try? q?.decode(String.self, forKey: .name)
         qrAmount = try? q?.decode(String.self, forKey: .amount)
         shield = try? c.decode(ShieldInfo.self, forKey: .shield)
+        coolingSeconds = (try? c.decode(Int.self, forKey: .cooling_seconds)) ?? 0
+        stage = try? c.decode(LifecycleStage.self, forKey: .stage)
+        badge = try? c.decode(MerchantBadge.self, forKey: .badge)
+        nameMismatch = (try? c.decode(Bool.self, forKey: .name_mismatch)) ?? false
     }
     static func == (a: SafetyLookup, b: SafetyLookup) -> Bool { a.ref == b.ref && a.score == b.score }
     func hash(into h: inout Hasher) { h.combine(ref); h.combine(score) }
@@ -714,5 +722,66 @@ extension TracePaySession {
     }
     func recordReceipt(_ body: ReceiptBody) async throws {
         let _: ExternalPaymentRecord = try await send("/api/v1/external-payments", method: "POST", body: body, authenticated: true)
+    }
+}
+
+
+// MARK: - v1.1: TraceID, fraud intelligence, recovery, research
+struct LifecycleStage: Decodable, Hashable { let stage: String; let label: String; let detail: String }
+struct MerchantBadge: Decodable, Hashable { let tier: String; let label: String; let detail: String }
+struct TraceIDResult: Decodable { let live: Bool; let reason: String; let blinks: Int; let duplicate: Bool }
+struct MessageSignal: Decodable, Identifiable { var id: String { code }; let code: String; let label: String; let points: Int; let matched: [String]? }
+struct MessageUPICheck: Decodable, Identifiable { var id: String { ref }; let ref: String; let name: String?; let score: Int?; let band: String; let title: String; let reports: Int }
+struct MessagePhoneCheck: Decodable, Identifiable { var id: String { number }; let number: String; let reports: Int; let score: Int; let band: String }
+struct LinkCheck: Decodable, Identifiable { var id: String { url }; let url: String; let host: String; let score: Int; let band: String; let signals: [LinkSignal] }
+struct LinkSignal: Decodable, Hashable { let code: String; let label: String; let points: Int }
+struct MessageAnalysis: Decodable {
+    let overall: Int; let overall_band: String; let verdict: String; let signals: [MessageSignal]
+    let upi_checks: [MessageUPICheck]; let phone_checks: [MessagePhoneCheck]; let link_checks: [LinkCheck]
+}
+struct TrailHop: Decodable, Identifiable { var id: String { from + to + at }; let from: String; let to: String; let amount: String; let at: String; let hop: Int }
+struct RecoveryStep: Decodable, Identifiable { var id: String { title }; let title: String; let detail: String; let action: String? }
+struct RecoveryPack: Decodable {
+    let payee: String; let payee_name: String?; let amount: String; let paid_at: String; let reference: String?; let app: String
+    let complaint_text: String; let bank_letter: String; let money_trail: [TrailHop]; let steps: [RecoveryStep]
+}
+struct MyReport: Decodable, Identifiable { let id: Int; let target_ref: String; let category_label: String; let status: String; let created_at: String; let warned: Int }
+
+extension TracePaySession {
+    func traceIDCheck(video: Data) async throws -> TraceIDResult {
+        guard let token else { throw NSError(domain: "Trace.Pay", code: 401, userInfo: [NSLocalizedDescriptionKey: "Please sign in again."]) }
+        let boundary = "TracePay-" + UUID().uuidString
+        var request = URLRequest(url: baseURL.appending(path: "api/v1/traceid/check"))
+        request.httpMethod = "POST"; request.timeoutInterval = 60
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"face_video\"; filename=\"traceid.mp4\"\r\nContent-Type: video/mp4\r\n\r\n".utf8)
+        body.append(video); body.append(Data("\r\n--\(boundary)--\r\n".utf8)); request.httpBody = body
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let detail = (try? decoder.decode(APIError.self, from: data).detail) ?? "Couldn't check the video. Try again."
+            throw NSError(domain: "Trace.Pay API", code: (response as? HTTPURLResponse)?.statusCode ?? 0, userInfo: [NSLocalizedDescriptionKey: detail])
+        }
+        return try decoder.decode(TraceIDResult.self, from: data)
+    }
+    func analyzeMessage(_ text: String) async throws -> MessageAnalysis {
+        try await send("/api/v1/intel/message", method: "POST", body: ["text": text], authenticated: true)
+    }
+    func recoveryPack(paymentId: Int?, transferRef: String?) async throws -> RecoveryPack {
+        let none: [String: String]? = nil
+        let q = paymentId.map { "payment_id=\($0)" } ?? "transfer_ref=\(transferRef?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+        return try await send("/api/v1/recovery/pack?\(q)", method: "GET", body: none, authenticated: true)
+    }
+    func myReports() async throws -> [MyReport] {
+        let none: [String: String]? = nil
+        return try await send("/api/v1/community/reports/mine", method: "GET", body: none, authenticated: true)
+    }
+    /// Explanation study: what the person did after seeing a TraceScore report. Best effort; never blocks the payment.
+    func logDecision(ref: String, score: Int?, band: String, action: String, explained: Bool, seconds: Double) {
+        Task {
+            var body: [String: String] = ["ref": ref, "band": band, "action": action, "explanation_opened": explained ? "true" : "false", "seconds_on_report": String(format: "%.1f", seconds)]
+            if let score { body["score"] = String(score) }
+            let _: AnyDecodableIgnored? = try? await send("/api/v1/research/decision", method: "POST", body: body, authenticated: true)
+        }
     }
 }

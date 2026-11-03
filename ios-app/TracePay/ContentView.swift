@@ -6,6 +6,7 @@ import AVFoundation
 import UIKit
 import PhotosUI
 import Vision
+import CallKit
 
 // MARK: - Design system (trace.pay 6, light theme)
 
@@ -639,8 +640,8 @@ struct SetupFlow: View {
                     HStack { Spacer(); Text("Step \(step) of \(total)").font(.tp(13)).foregroundStyle(TP.muted) }.frame(height: 44)
                     ProgressBar(step: step, total: total).padding(.top, 8)
                     Caption(text: ["About you", "Identity", "Device lock", "Verify email"][step - 1]).padding(.top, 24)
-                    Text(["Tell us about you", "Take a live selfie", "Lock trace.pay with your phone", "Check your email"][step - 1]).font(.tp(30, .semibold)).foregroundStyle(TP.ink).padding(.top, 8)
-                    Text(["Used for your trace.pay profile.", "Encrypted and only checked for one clear face.", "We use the lock you already have. Nothing new to remember.", "We sent a 6-digit code to \(session.email ?? "your email")."][step - 1])
+                    Text(["Tell us about you", "Record your TraceID", "Lock trace.pay with your phone", "Check your email"][step - 1]).font(.tp(30, .semibold)).foregroundStyle(TP.ink).padding(.top, 8)
+                    Text(["Used for your trace.pay profile.", "A 5-second video: blink twice so we know it's really you. One person, one trace.pay ID.", "We use the lock you already have. Nothing new to remember.", "We sent a 6-digit code to \(session.email ?? "your email")."][step - 1])
                         .font(.tp(15)).foregroundStyle(TP.muted).padding(.top, 6)
                     Group {
                         if step == 1 { aboutStep } else if step == 2 { selfieStep } else if step == 3 { lockStep } else { emailStep }
@@ -661,7 +662,7 @@ struct SetupFlow: View {
         .onAppear { if name.isEmpty { name = pendingName } }
         .onReceive(resendTick) { _ in if resendIn > 0 { resendIn -= 1 } }
         .fullScreenCover(isPresented: $showCamera) {
-            LiveSelfieView(onCaptured: { data in photo = data; showCamera = false; Haptic.success() }, onCancel: { showCamera = false })
+            TraceIDCaptureView(onDone: { data in photo = data; showCamera = false; Haptic.success() }, onCancel: { showCamera = false })
         }
     }
     private var aboutStep: some View {
@@ -696,11 +697,12 @@ struct SetupFlow: View {
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
                     .fill(LinearGradient(colors: [TP.violetSoft, Color.white], startPoint: .top, endPoint: .bottom))
                     .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(TP.hair))
-                if let photo, let img = UIImage(data: photo) {
+                PixelField(tint: TP.violet).clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous)).opacity(0.7)
+                if photo != nil {
                     VStack(spacing: 12) {
-                        Image(uiImage: img).resizable().scaledToFill().frame(width: 170, height: 214).clipShape(Ellipse())
-                            .overlay(Ellipse().stroke(TP.good, lineWidth: 4)).shadow(color: TP.good.opacity(0.25), radius: 16, y: 8)
-                        Label("Clear face captured", systemImage: "checkmark.seal.fill").font(.tp(14, .semibold)).foregroundStyle(TP.good)
+                        Image(systemName: "checkmark.seal.fill").font(.system(size: 76)).foregroundStyle(TP.good)
+                            .frame(width: 150, height: 150).background(Color.white, in: Circle()).shadow(color: TP.good.opacity(0.3), radius: 18, y: 8)
+                        Label("Live person confirmed", systemImage: "person.fill.checkmark").font(.tp(14, .semibold)).foregroundStyle(TP.good)
                             .padding(.horizontal, 12).padding(.vertical, 6).background(TP.goodBg, in: Capsule())
                     }
                 } else {
@@ -709,18 +711,19 @@ struct SetupFlow: View {
                             Ellipse().stroke(TP.violet.opacity(0.35), style: StrokeStyle(lineWidth: 3, dash: [9, 7])).frame(width: 150, height: 190)
                             Image(systemName: "face.smiling").font(.system(size: 64, weight: .light)).foregroundStyle(TP.violet)
                         }
-                        Text("Your face goes inside the oval").font(.tp(14, .medium)).foregroundStyle(TP.ink2)
+                        Text("5 seconds · blink twice").font(.tp(14, .medium)).foregroundStyle(TP.ink2)
                     }
                 }
             }.frame(height: 300)
             VStack(alignment: .leading, spacing: 12) {
                 tip("sun.max.fill", "Good light", "Face a window or a lamp; avoid strong light behind you.")
                 tip("eyeglasses", "Nothing covering your face", "Take off sunglasses, masks and caps.")
-                tip("hand.raised.fill", "Hold still", "The photo is taken automatically when your face is clear.")
-                tip("lock.fill", "Private", "Encrypted, and only checked for one clear face.")
+                tip("eye.fill", "Blink twice slowly", "Recording starts when your face is centred and lasts 5 seconds.")
+                tip("person.2.slash.fill", "One person, one ID", "Your face is matched so nobody can open a second account in your name.")
+                tip("lock.fill", "Private", "Encrypted, and used only for this check.")
             }.padding(16).background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(TP.hair))
-            Button { showCamera = true } label: { Label(photo == nil ? "Open camera" : "Retake selfie", systemImage: "camera.fill") }
+            Button { showCamera = true } label: { Label(photo == nil ? "Record 5-second video" : "Record again", systemImage: "video.fill") }
                 .buttonStyle(NeoButtonStyle(kind: photo == nil ? .violet : .white))
         }
     }
@@ -1191,6 +1194,7 @@ struct ActivityScreen: View {
 
 struct PaymentDetailView: View {
     let item: ActivityItem
+    @State private var recovery = false
     @State private var report: TextRoute?
     var body: some View {
         ZStack {
@@ -1221,12 +1225,16 @@ struct PaymentDetailView: View {
                         Label("Share receipt", systemImage: "square.and.arrow.up")
                     }.buttonStyle(NeoButtonStyle(kind: .white))
                     if !item.incoming {
+                        Button { recovery = true } label: { Label("I was scammed: get help now", systemImage: "timer") }.buttonStyle(NeoButtonStyle(kind: .danger))
                         Button { report = TextRoute(value: item.ref) } label: { Label("Report a problem", systemImage: "flag") }.buttonStyle(NeoButtonStyle(kind: .white))
                     }
                 }.padding(.horizontal, 22).padding(.bottom, 24)
             }
         }
         .navigationTitle("Payment details").navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $recovery) {
+            RecoverySheet(paymentId: item.id.hasPrefix("ext-") ? Int(item.id.dropFirst(4)) : nil, transferRef: item.id.hasPrefix("tp-") ? item.ref : nil)
+        }
         .sheet(item: $report) { r in ReportSheet(ref: r.value) }
     }
     private func step(_ title: String, _ sub: String) -> some View {
@@ -1289,11 +1297,13 @@ struct RiskModel: Identifiable {
     let score: Int?; let band: String; let title: String; let advice: String
     let factors: [SafetyFactor]; let counterfactuals: [String]
     let reports: Int; let records: Int; let confidence: Double; let shield: [String]
+    var badge: MerchantBadge? = nil; var stage: LifecycleStage? = nil; var mismatch = false; var cooling = 0
     init(_ l: SafetyLookup) {
         name = l.display_name ?? l.ref; ref = l.ref; verified = l.merchant?.verified == true; member = l.member
         score = l.score; band = l.band; title = l.verdict.title; advice = l.verdict.advice
         factors = l.factors; counterfactuals = l.counterfactuals
         reports = l.reports; records = l.records; confidence = l.confidence; shield = l.shield?.reasons.map(\.text) ?? []
+        badge = l.badge; stage = l.stage; mismatch = l.nameMismatch; cooling = l.coolingSeconds
     }
     init(fallback r: RiskResponse, name: String) {
         self.name = name; ref = r.recipient_ref; verified = false; member = true
@@ -1366,6 +1376,7 @@ struct RiskReportView: View {
                     if model.verified { Image(systemName: "checkmark.seal.fill").foregroundStyle(Color(hex: 0x1D9BF0)) }
                 }
                 Text(model.ref).font(.tp(13)).foregroundStyle(TP.muted)
+                IdentityChips(badge: model.badge, stage: model.stage, mismatch: model.mismatch).padding(.top, 6)
             }
             TraceScoreBadge()
             ZStack(alignment: .topTrailing) {
@@ -1373,7 +1384,7 @@ struct RiskReportView: View {
                     .mask(RadialGradient(colors: [.black, .black.opacity(0.6), .clear], center: .center, startRadius: 40, endRadius: 190))
                     .allowsHitTesting(false)
                 ScoreMeterView(score: model.score, band: model.band).frame(maxWidth: .infinity).padding(.top, 20)
-                Button { showRules = true } label: {
+                Button { showRules = true; StudyTracker.explanationOpened = true } label: {
                     Image(systemName: "info.circle.fill").font(.system(size: 22)).foregroundStyle(TP.violet)
                         .frame(width: 44, height: 44).background(Color.white, in: Circle()).shadow(color: TP.ink.opacity(0.08), radius: 6, y: 2)
                 }.accessibilityLabel("How the score works")
@@ -1410,7 +1421,7 @@ struct RiskReportView: View {
             HStack {
                 Text("Why this score").font(.tp(18, .semibold)).foregroundStyle(TP.ink)
                 Spacer()
-                Button { showRules = true } label: { Label("How it's scored", systemImage: "info.circle").font(.tp(13, .medium)).foregroundStyle(TP.violet) }
+                Button { showRules = true; StudyTracker.explanationOpened = true } label: { Label("How it's scored", systemImage: "info.circle").font(.tp(13, .medium)).foregroundStyle(TP.violet) }
             }
             if !raises.isEmpty { section("What raises the risk") { factorList(raises, offset: 0) } }
             if !lowers.isEmpty { section("What lowers the risk") { factorList(lowers, offset: raises.count) } }
@@ -1510,26 +1521,35 @@ struct FactorRow: View {
 /// Native sheet with the report and pinned actions. The chosen action runs after the sheet closes (see onDismiss callers).
 enum RiskAction { case pay, report }
 struct RiskSheet: View {
+    @EnvironmentObject private var session: TracePaySession
     let model: RiskModel
     let payLabel: String
     let choose: (RiskAction?) -> Void
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         ScrollView(showsIndicators: false) {
-            RiskReportView(model: model).padding(.horizontal, 22).padding(.top, 24).padding(.bottom, 12)
+            VStack(spacing: 14) {
+                GuardBanner()
+                RiskReportView(model: model)
+            }.padding(.horizontal, 22).padding(.top, 24).padding(.bottom, 12)
         }
+        .onAppear { StudyTracker.explanationOpened = false; StudyTracker.shownAt = Date() }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 10) {
-                Button { choose(.pay); dismiss() } label: { Label(payLabel, systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }
+                Button { log("pay"); choose(.pay); dismiss() } label: { Label(payLabel, systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }
                     .buttonStyle(NeoButtonStyle(kind: model.band == "review" || model.band == "high_review" ? .danger : .ink))
                 HStack(spacing: 10) {
-                    Button("Cancel") { choose(nil); dismiss() }.buttonStyle(NeoButtonStyle(kind: .white))
-                    Button { choose(.report); dismiss() } label: { Label("Report", systemImage: "flag") }.buttonStyle(NeoButtonStyle(kind: .white))
+                    Button("Cancel") { log("cancel"); choose(nil); dismiss() }.buttonStyle(NeoButtonStyle(kind: .white))
+                    Button { log("report"); choose(.report); dismiss() } label: { Label("Report", systemImage: "flag") }.buttonStyle(NeoButtonStyle(kind: .white))
                 }
             }
             .padding(.horizontal, 22).padding(.top, 12).padding(.bottom, 8).background(.white)
         }
         .presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+    private func log(_ action: String) {
+        session.logDecision(ref: model.ref, score: model.score, band: model.band, action: action,
+                            explained: StudyTracker.explanationOpened, seconds: Date().timeIntervalSince(StudyTracker.shownAt))
     }
 }
 
@@ -1566,6 +1586,7 @@ struct ScanScreen: View {
 struct CheckScreen: View {
     @EnvironmentObject private var session: TracePaySession
     @AppStorage("tp.recentChecks") private var recentRaw = ""
+    @State private var mode = 0
     @State private var query = ""
     @State private var result: RiskModel?
     @State private var busy = false
@@ -1578,8 +1599,10 @@ struct CheckScreen: View {
                 ScreenBackground()
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Check any UPI ID").font(.tp(32, .semibold)).foregroundStyle(TP.ink)
-                        Text("trace.pay, Google Pay, PhonePe, Paytm or a bank.").font(.tp(15)).foregroundStyle(TP.muted)
+                        Text(mode == 0 ? "Check any UPI ID" : "Check a message").font(.tp(32, .semibold)).foregroundStyle(TP.ink)
+                        Text(mode == 0 ? "trace.pay, Google Pay, PhonePe, Paytm or a bank." : "SMS, WhatsApp or Telegram: scam language, links, numbers and UPI IDs.").font(.tp(15)).foregroundStyle(TP.muted)
+                        SegmentSwitch(options: [("at", "UPI ID"), ("text.bubble", "Message")], selection: $mode)
+                        if mode == 1 { MessageCheckView() } else {
                         HStack(spacing: 10) {
                             TPField(icon: "magnifyingglass", placeholder: "name@okaxis", text: $query, keyboard: .emailAddress)
                             Button { if let s = UIPasteboard.general.string { query = s } } label: {
@@ -1607,6 +1630,7 @@ struct CheckScreen: View {
                                     if r != recent.last { Divider() }
                                 }
                             }
+                        }
                         }
                     }.padding(.horizontal, 22).padding(.top, 8).padding(.bottom, 24)
                 }
@@ -1638,6 +1662,7 @@ struct ProfileScreen: View {
     @AppStorage("tp.dailyLimit") private var dailyLimit = 50000.0
     @AppStorage("tp.voice") private var voice = false
     @AppStorage("tp.haptics") private var haptics = true
+    @State private var showReports = false
     @State private var confirmSignOut = false
     var body: some View {
         NavigationStack {
@@ -1677,6 +1702,8 @@ struct ProfileScreen: View {
                             Stepper(value: $dailyLimit, in: 1000...100000, step: 5000) { row("gauge.with.needle", "Daily limit", rupees(dailyLimit)) }
                             Divider()
                             Toggle(isOn: $voice) { row("speaker.wave.2", "Read the risk aloud", "Speaks every risk verdict") }
+                            Divider()
+                            Button { showReports = true } label: { HStack { row("flag.fill", "My reports", "Outcomes and how many people they warned"); Spacer(); Image(systemName: "chevron.right").foregroundStyle(TP.faint) } }
                         }
                         group("App") {
                             Toggle(isOn: $haptics) { row("hand.tap", "Haptics", "Vibration feedback") }
@@ -1684,13 +1711,14 @@ struct ProfileScreen: View {
                             Button(action: onHelp) { HStack { row("lifepreserver", "Help & emergency", "If you've been scammed"); Spacer(); Image(systemName: "chevron.right").foregroundStyle(TP.faint) } }
                         }
                         Button { confirmSignOut = true } label: { Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right") }.buttonStyle(NeoButtonStyle(kind: .white))
-                        Text("trace.pay · version 6.0").font(.tp(12.5)).foregroundStyle(TP.muted).frame(maxWidth: .infinity)
+                        Text("trace.pay · v1.1").font(.tp(12.5)).foregroundStyle(TP.muted).frame(maxWidth: .infinity)
                     }.padding(.horizontal, 22).padding(.top, 8).padding(.bottom, 24)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
         }
         .tint(TP.violet)
+        .sheet(isPresented: $showReports) { MyReportsSheet() }
         .confirmationDialog("Sign out of trace.pay?", isPresented: $confirmSignOut, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { session.clearSavedCredentials() }
         }
@@ -1776,6 +1804,7 @@ struct PayMemberScreen: View {
     @State private var busy = false
     @State private var message = ""
     @State private var result: PilotTransferResponse?
+    @State private var serverCooling = 0
     @State private var remaining = 0
     @State private var key = UUID().uuidString
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -1912,7 +1941,7 @@ struct PayMemberScreen: View {
         busy = true; message = ""; defer { busy = false }
         do {
             let rr = try await session.assess(recipientRef: r.vpa_id, amount: value)
-            if let look = try? await session.lookup(ref: r.vpa_id, amount: value) { risk = RiskModel(look) } else { risk = RiskModel(fallback: rr, name: r.display_name) }
+            if let look = try? await session.lookup(ref: r.vpa_id, amount: value) { risk = RiskModel(look); serverCooling = look.coolingSeconds } else { risk = RiskModel(fallback: rr, name: r.display_name) }
             key = UUID().uuidString
         } catch { message = error.localizedDescription }
     }
@@ -1921,7 +1950,8 @@ struct PayMemberScreen: View {
         let action = pending; pending = nil
         switch action {
         case .pay:
-            if coolingOn && isNewPayee && (Double(amount) ?? 0) >= 5000 { remaining = coolingMinutes * 60; step = .cooling }
+            let ruleWait = coolingOn && isNewPayee && (Double(amount) ?? 0) >= 5000 ? coolingMinutes * 60 : 0
+            if max(ruleWait, serverCooling) > 0 { remaining = max(ruleWait, serverCooling); step = .cooling }
             else { Task { await confirmAndSend() } }
         case .report: report = TextRoute(value: recipient?.vpa_id ?? input)
         case .none: break
@@ -2034,6 +2064,7 @@ struct ExternalPayScreen: View {
     @State private var busy = false
     @State private var message = ""
     @State private var saved: ReceiptBody?
+    @State private var coolWait = 0
     @State private var copied = ""
     private var qr: [String: String]? { UPIQR.parse(raw) }
     private var payeeName: String { look?.display_name ?? qr?["pn"] ?? qr?["pa"] ?? "" }
@@ -2055,6 +2086,10 @@ struct ExternalPayScreen: View {
         .sheet(item: $risk, onDismiss: runPending) { m in RiskSheet(model: m, payLabel: "Pay \(rupees(amount)) with \(chosen?.name ?? "UPI")") { pending = $0 } }
         .sheet(item: $report) { r in ReportSheet(ref: r.value) }
         .sheet(isPresented: $showGuide) { guide }
+        .sheet(isPresented: Binding(get: { coolWait > 0 }, set: { if !$0 { coolWait = 0 } })) {
+            CoolingOffSheet(seconds: coolWait, reason: "TraceScore found warning signs on \(payeeName). Scammers rush you, so take a moment before paying.",
+                            onDone: { coolWait = 0; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showGuide = true } }, onCancel: { coolWait = 0 })
+        }
         .sheet(isPresented: $showReceipt) {
             ReceiptSheet(amount: amount, payee: qr?["pa"] ?? raw, payeeName: payeeName, app: chosen?.name ?? "UPI") { body in
                 Task { await save(body) }
@@ -2189,7 +2224,9 @@ struct ExternalPayScreen: View {
     private func runPending() {
         let action = pending; pending = nil
         switch action {
-        case .pay: DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showGuide = true }
+        case .pay:
+            let wait = look?.coolingSeconds ?? 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { if wait > 0 { coolWait = wait } else { showGuide = true } }
         case .report: report = TextRoute(value: qr?["pa"] ?? raw)
         case .none: break
         }
@@ -2668,6 +2705,436 @@ struct PixelField: View {
             }
             .rotation3DEffect(.degrees(sin(t * 0.35) * 9), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
             .rotation3DEffect(.degrees(cos(t * 0.28) * 11), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+        }
+    }
+}
+
+// MARK: - TraceID: 5-second video selfie with a live blink check (one person, one trace.pay ID)
+
+final class TraceIDRecorder: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    enum Phase { case aligning, recording, checking, done }
+    @Published var phase: Phase = .aligning
+    @Published var faceFound = false
+    @Published var blinks = 0
+    @Published var progress: Double = 0
+    @Published var failure: String?
+    let session = AVCaptureSession()
+    private let queue = DispatchQueue(label: "tracepay.traceid")
+    private var writer: AVAssetWriter?
+    private var input: AVAssetWriterInput?
+    private var firstTime: CMTime?
+    private var frame = 0
+    private var eyesClosed = false
+    private var faceSince: Date?
+    private var started = false
+    private let duration = 5.0
+    private(set) var videoURL: URL?
+
+    func start() {
+        queue.async {
+            guard self.session.inputs.isEmpty else { if !self.session.isRunning { self.session.startRunning() }; return }
+            self.session.beginConfiguration()
+            self.session.sessionPreset = .vga640x480
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
+                  let input = try? AVCaptureDeviceInput(device: device), self.session.canAddInput(input) else {
+                DispatchQueue.main.async { self.failure = "The front camera isn't available." }; self.session.commitConfiguration(); return
+            }
+            self.session.addInput(input)
+            let output = AVCaptureVideoDataOutput()
+            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            output.alwaysDiscardsLateVideoFrames = true
+            output.setSampleBufferDelegate(self, queue: self.queue)
+            if self.session.canAddOutput(output) { self.session.addOutput(output) }
+            if let c = output.connection(with: .video) {
+                if c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }
+                if c.isVideoMirroringSupported { c.isVideoMirrored = true }
+            }
+            self.session.commitConfiguration()
+            self.session.startRunning()
+        }
+    }
+    func stop() { queue.async { if self.session.isRunning { self.session.stopRunning() } } }
+    func reset() {
+        queue.async {
+            self.writer = nil; self.input = nil; self.firstTime = nil; self.eyesClosed = false; self.faceSince = nil; self.started = false
+            DispatchQueue.main.async { self.phase = .aligning; self.blinks = 0; self.progress = 0; self.failure = nil }
+        }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        frame += 1
+        if frame % 2 == 0 { analyze(pixels) }
+        if !started, faceSince.map({ Date().timeIntervalSince($0) > 0.8 }) == true { started = true; beginWriting(pixels) }
+        guard let writer, let input, writer.status == .writing else { return }
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if firstTime == nil { firstTime = time; writer.startSession(atSourceTime: time) }
+        if input.isReadyForMoreMediaData { input.append(sampleBuffer) }
+        let elapsed = CMTimeGetSeconds(CMTimeSubtract(time, firstTime ?? time))
+        DispatchQueue.main.async { self.progress = min(1, elapsed / self.duration) }
+        if elapsed >= duration { finish() }
+    }
+
+    private func beginWriting(_ pixels: CVPixelBuffer) {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("traceid-\\(UUID().uuidString).mp4")
+        guard let w = try? AVAssetWriter(outputURL: url, fileType: .mp4) else { return }
+        let i = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: CVPixelBufferGetWidth(pixels), AVVideoHeightKey: CVPixelBufferGetHeight(pixels)])
+        i.expectsMediaDataInRealTime = true
+        guard w.canAdd(i) else { return }
+        w.add(i); w.startWriting()
+        writer = w; input = i; videoURL = url
+        DispatchQueue.main.async { self.phase = .recording; Haptic.tap() }
+    }
+
+    private func finish() {
+        guard let writer, let input else { return }
+        self.writer = nil
+        input.markAsFinished()
+        writer.finishWriting { DispatchQueue.main.async { self.phase = .checking } }
+    }
+
+    /// Eye openness from Vision face landmarks: the eye outline's height relative to its width.
+    private func analyze(_ pixels: CVPixelBuffer) {
+        let request = VNDetectFaceLandmarksRequest()
+        try? VNImageRequestHandler(cvPixelBuffer: pixels, orientation: .up).perform([request])
+        guard let face = (request.results ?? []).max(by: { $0.boundingBox.width < $1.boundingBox.width }), face.boundingBox.width > 0.25 else {
+            faceSince = nil; DispatchQueue.main.async { self.faceFound = false }; return
+        }
+        if faceSince == nil { faceSince = Date() }
+        DispatchQueue.main.async { self.faceFound = true }
+        func openness(_ region: VNFaceLandmarkRegion2D?) -> CGFloat? {
+            guard let pts = region?.normalizedPoints, pts.count > 3 else { return nil }
+            let xs = pts.map(\\.x), ys = pts.map(\\.y)
+            let w = (xs.max() ?? 0) - (xs.min() ?? 0); guard w > 0 else { return nil }
+            return ((ys.max() ?? 0) - (ys.min() ?? 0)) / w
+        }
+        let values = [openness(face.landmarks?.leftEye), openness(face.landmarks?.rightEye)].compactMap { $0 }
+        guard !values.isEmpty else { return }
+        let ratio = values.reduce(0, +) / CGFloat(values.count)
+        if ratio < 0.17 { eyesClosed = true }
+        else if ratio > 0.24, eyesClosed {
+            eyesClosed = false
+            DispatchQueue.main.async { if self.phase == .recording { self.blinks += 1; Haptic.tap() } }
+        }
+    }
+}
+
+struct CameraPreview: UIViewRepresentable {
+    let session: AVCaptureSession
+    final class PreviewView: UIView {
+        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+        var preview: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+    }
+    func makeUIView(context: Context) -> PreviewView { let v = PreviewView(); v.preview.session = session; v.preview.videoGravity = .resizeAspectFill; return v }
+    func updateUIView(_ uiView: PreviewView, context: Context) {}
+}
+
+struct TraceIDCaptureView: View {
+    @EnvironmentObject private var session: TracePaySession
+    @StateObject private var rec = TraceIDRecorder()
+    let onDone: (Data) -> Void
+    let onCancel: () -> Void
+    @State private var result: TraceIDResult?
+    @State private var message = ""
+    @State private var video: Data?
+    private var instruction: (String, String) {
+        if let result { return result.live ? ("Live person confirmed", "Your TraceID is ready.") : ("Let's try again", result.reason) }
+        if !message.isEmpty { return ("Let's try again", message) }
+        switch rec.phase {
+        case .aligning: return rec.faceFound ? ("Hold still…", "Starting in a moment") : ("Center your face", "Fit your face inside the oval, in good light")
+        case .recording: return rec.blinks >= 2 ? ("Great, keep looking", "Hold still until the ring completes") : ("Blink twice slowly", "Keep your face inside the oval")
+        case .checking: return ("Checking it's really you", "Liveness and one-person-one-ID check")
+        case .done: return ("Done", "")
+        }
+    }
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(hex: 0x24108A), Color(hex: 0x110828)], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+            PixelField(tint: TP.lime).ignoresSafeArea().opacity(0.9)
+            VStack(spacing: 22) {
+                HStack {
+                    Button(action: { rec.stop(); onCancel() }) { Image(systemName: "xmark").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                        .frame(width: 44, height: 44).background(Color.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous)) }
+                    Spacer()
+                    HStack(spacing: 6) { Image("TPMark").resizable().frame(width: 20, height: 20).clipShape(RoundedRectangle(cornerRadius: 5)); Text("TraceID").font(.tp(15, .bold)).foregroundStyle(.white) }
+                    Spacer(); Color.clear.frame(width: 44, height: 44)
+                }
+                Text(instruction.0).font(.tp(28, .semibold)).foregroundStyle(.white).multilineTextAlignment(.center)
+                    .contentTransition(.opacity).animation(.easeInOut, value: instruction.0)
+                Text(instruction.1).font(.tp(15)).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center).padding(.horizontal, 24)
+                ZStack {
+                    CameraPreview(session: rec.session).frame(width: 250, height: 320).clipShape(Ellipse())
+                    Ellipse().stroke(Color.white.opacity(0.15), lineWidth: 8).frame(width: 266, height: 336)
+                    Ellipse().trim(from: 0, to: rec.progress).stroke(result?.live == false ? TP.bad : TP.lime, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                        .frame(width: 266, height: 336).rotationEffect(.degrees(-90)).animation(.linear(duration: 0.2), value: rec.progress)
+                    if rec.phase == .checking && result == nil { ProgressView().tint(.white).scaleEffect(1.4) }
+                    if let result { Image(systemName: result.live ? "checkmark.seal.fill" : "exclamationmark.triangle.fill").font(.system(size: 64)).foregroundStyle(result.live ? TP.lime : TP.bad) }
+                }
+                .cornerSquares(TP.lime, size: 14)
+                HStack(spacing: 14) {
+                    ForEach(0..<2, id: \\.self) { i in
+                        HStack(spacing: 6) {
+                            RoundedRectangle(cornerRadius: 3).fill(i < rec.blinks ? TP.lime : Color.white.opacity(0.2)).frame(width: 14, height: 14)
+                            Text("Blink \\(i + 1)").font(.tp(13, .medium)).foregroundStyle(.white.opacity(i < rec.blinks ? 1 : 0.6))
+                        }.padding(.horizontal, 12).padding(.vertical, 8).background(Color.white.opacity(0.1), in: Capsule())
+                    }
+                }.animation(.spring(response: 0.3), value: rec.blinks)
+                Spacer()
+                if let result, result.live, let video {
+                    Button { onDone(video) } label: { Label("Continue", systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }.buttonStyle(NeoButtonStyle(kind: .lime))
+                } else if result != nil || !message.isEmpty {
+                    Button { result = nil; message = ""; video = nil; rec.reset() } label: { Label("Record again", systemImage: "arrow.counterclockwise") }.buttonStyle(NeoButtonStyle(kind: .lime))
+                }
+                Label("5 seconds · encrypted · used only to stop duplicate accounts", systemImage: "lock.fill").font(.tp(12)).foregroundStyle(.white.opacity(0.6))
+            }.padding(22)
+        }
+        .onAppear { rec.start() }
+        .onDisappear { rec.stop() }
+        .onChange(of: rec.phase) { _, phase in if phase == .checking { Task { await check() } } }
+    }
+    @MainActor private func check() async {
+        guard let url = rec.videoURL, let data = try? Data(contentsOf: url) else { message = "The recording failed. Try again."; return }
+        if rec.blinks < 1 { message = "We didn't see you blink. Blink twice slowly while recording."; return }
+        video = data
+        do { result = try await session.traceIDCheck(video: data); if result?.live == true { Haptic.success() } else { Haptic.error() } }
+        catch { message = error.localizedDescription }
+    }
+}
+
+// MARK: - Check a message (SMS / WhatsApp / Telegram)
+
+struct MessageCheckView: View {
+    @EnvironmentObject private var session: TracePaySession
+    @State private var text = ""
+    @State private var result: MessageAnalysis?
+    @State private var busy = false
+    @State private var message = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty { Text("Paste a suspicious message, link or UPI ID…").font(.tp(15)).foregroundStyle(TP.faint).padding(16) }
+                TextEditor(text: $text).font(.tp(15)).scrollContentBackground(.hidden).padding(10).frame(minHeight: 140)
+            }.background(TP.canvas, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            HStack(spacing: 10) {
+                Button { if let s = UIPasteboard.general.string { text = s } } label: { Label("Paste", systemImage: "doc.on.clipboard") }.buttonStyle(NeoButtonStyle(kind: .white))
+                Button { Task { await run() } } label: { if busy { ProgressView().tint(.white) } else { Label("Check message", systemImage: "text.magnifyingglass") } }
+                    .buttonStyle(NeoButtonStyle()).disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).count < 3)
+            }
+            if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) }
+            if let r = result {
+                let col = Risk.color(r.overall_band)
+                HStack(spacing: 12) {
+                    Image(systemName: r.overall >= 50 ? "exclamationmark.octagon.fill" : r.overall >= 25 ? "exclamationmark.triangle.fill" : "checkmark.shield.fill")
+                        .font(.system(size: 26)).foregroundStyle(col)
+                    VStack(alignment: .leading, spacing: 2) { Text(r.verdict).font(.tp(18, .semibold)).foregroundStyle(col); Text("Risk \\(r.overall)%").font(.tp(13)).foregroundStyle(TP.ink2) }
+                    Spacer()
+                }.padding(16).background(Risk.bg(r.overall_band), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                ForEach(r.signals) { s in
+                    row("exclamationmark.bubble.fill", s.label, (s.matched ?? []).map { "\\u{201C}\\($0)\\u{201D}" }.joined(separator: ", "), "+\\(s.points)", TP.bad)
+                }
+                ForEach(r.upi_checks) { c in row("at", c.ref + (c.name.map { " · \\($0)" } ?? ""), "\\(c.title) · \\(c.reports) report\\(c.reports == 1 ? "" : "s")", "\\(c.score ?? 0)%", Risk.color(c.band)) }
+                ForEach(r.phone_checks) { p in row("phone.fill", p.number, "\\(p.reports) report\\(p.reports == 1 ? "" : "s")", "\\(p.score)%", Risk.color(p.band)) }
+                ForEach(r.link_checks) { l in row("link", l.host, l.signals.map(\\.label).joined(separator: " · ").isEmpty ? "No warning signs" : l.signals.map(\\.label).joined(separator: " · "), "\\(l.score)%", Risk.color(l.band)) }
+            }
+        }
+    }
+    private func row(_ icon: String, _ title: String, _ sub: String, _ value: String, _ color: Color) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).frame(width: 36, height: 36).background(color, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) { Text(title).font(.tp(14.5, .semibold)).foregroundStyle(TP.ink); if !sub.isEmpty { Text(sub).font(.tp(12.5)).foregroundStyle(TP.muted) } }
+            Spacer(minLength: 6)
+            Text(value).font(.tp(14, .bold)).foregroundStyle(color)
+        }.padding(12).background(Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TP.hair))
+    }
+    @MainActor private func run() async {
+        busy = true; message = ""; defer { busy = false }
+        do { result = try await session.analyzeMessage(text) } catch { message = error.localizedDescription }
+    }
+}
+
+// MARK: - Golden hour: recovery right after a scam
+
+struct RecoverySheet: View {
+    @EnvironmentObject private var session: TracePaySession
+    @Environment(\\.dismiss) private var dismiss
+    let paymentId: Int?
+    let transferRef: String?
+    @State private var pack: RecoveryPack?
+    @State private var message = ""
+    @State private var copied = ""
+    @State private var report: TextRoute?
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    Image(systemName: "timer").font(.system(size: 20, weight: .bold)).foregroundStyle(.white).frame(width: 48, height: 48).background(TP.bad, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) { Text("Golden hour").font(.tp(13, .bold)).foregroundStyle(TP.bad); Text("Act now to get your money back").font(.tp(22, .semibold)).foregroundStyle(TP.ink) }
+                }.padding(.top, 26)
+                if let p = pack {
+                    ForEach(Array(p.steps.enumerated()), id: \\.offset) { i, step in
+                        Button { act(step) } label: {
+                            HStack(spacing: 12) {
+                                Text("\\(i + 1)").font(.tp(15, .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(i == 0 ? TP.bad : TP.ink, in: Circle())
+                                VStack(alignment: .leading, spacing: 2) { Text(step.title).font(.tp(15, .semibold)).foregroundStyle(TP.ink); Text(step.detail).font(.tp(12.5)).foregroundStyle(TP.muted).multilineTextAlignment(.leading) }
+                                Spacer(minLength: 0)
+                                if step.action != nil { Image(systemName: "arrow.up.right").foregroundStyle(TP.violet) }
+                            }.padding(14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
+                        }
+                    }
+                    textCard("Complaint (paste on cybercrime.gov.in)", p.complaint_text)
+                    textCard("Letter for your bank", p.bank_letter)
+                    if !p.money_trail.isEmpty {
+                        Caption(text: "Where the money went next")
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(p.money_trail) { h in
+                                HStack(spacing: 10) {
+                                    VStack(spacing: 0) { Circle().fill(h.hop == 1 ? TP.bad : TP.warn).frame(width: 10, height: 10); Rectangle().fill(TP.hair).frame(width: 2, height: 34) }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\\(h.from) → \\(h.to)").font(.tp(13.5, .medium)).foregroundStyle(TP.ink).lineLimit(1).truncationMode(.middle)
+                                        Text("\\(rupees(h.amount)) · \\(parseDate(h.at).formatted(date: .omitted, time: .shortened)) · hop \\(h.hop)").font(.tp(12)).foregroundStyle(TP.muted)
+                                    }
+                                }
+                            }
+                        }.padding(14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
+                    }
+                    if !copied.isEmpty { Label("Copied", systemImage: "checkmark.circle.fill").font(.tp(13, .medium)).foregroundStyle(TP.good) }
+                } else if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) }
+                else { ProgressView().frame(maxWidth: .infinity).padding(.top, 30) }
+            }.padding(.horizontal, 22).padding(.bottom, 24)
+        }
+        .presentationDetents([.large]).presentationDragIndicator(.visible)
+        .sheet(item: $report) { r in ReportSheet(ref: r.value) }
+        .task { do { pack = try await session.recoveryPack(paymentId: paymentId, transferRef: transferRef) } catch { message = error.localizedDescription } }
+    }
+    private func act(_ step: RecoveryStep) {
+        guard let a = step.action else { return }
+        if a == "report", let p = pack { report = TextRoute(value: p.payee); return }
+        if let url = URL(string: a == "tel:1930" ? "tel://1930" : a) { UIApplication.shared.open(url) }
+    }
+    private func textCard(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack { Caption(text: title); Spacer()
+                Button { UIPasteboard.general.string = text; copied = title; Haptic.tap() } label: { Label("Copy", systemImage: "doc.on.doc").font(.tp(13, .semibold)).foregroundStyle(TP.violet) }
+                ShareLink(item: text) { Image(systemName: "square.and.arrow.up").foregroundStyle(TP.violet) } }
+            Text(text).font(.tp(13)).foregroundStyle(TP.ink2).textSelection(.enabled).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(TP.canvas, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+}
+
+// MARK: - My reports and their outcomes
+
+struct MyReportsSheet: View {
+    @EnvironmentObject private var session: TracePaySession
+    @State private var rows: [MyReport]?
+    @State private var message = ""
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                Caption(text: "Community").padding(.top, 28)
+                Text("My reports").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
+                if let rows {
+                    if rows.isEmpty { Text("You haven't reported any accounts yet.").font(.tp(14)).foregroundStyle(TP.muted) }
+                    ForEach(rows) { r in
+                        let (label, color): (String, Color) = r.status == "verified" ? ("Confirmed", TP.good) : r.status == "rejected" ? ("Not confirmed", TP.faint) : ("Under review", TP.warn)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack { Text(r.target_ref).font(.tp(15, .semibold)).foregroundStyle(TP.ink).lineLimit(1); Spacer()
+                                Text(label).font(.tp(12, .semibold)).foregroundStyle(color).padding(.horizontal, 10).padding(.vertical, 4).background(color.opacity(0.12), in: Capsule()) }
+                            Text("\\(r.category_label) · \\(parseDate(r.created_at).formatted(date: .abbreviated, time: .omitted))").font(.tp(12.5)).foregroundStyle(TP.muted)
+                            Label(r.warned == 0 ? "No one has tried to pay it since" : "Warned \\(r.warned) \\(r.warned == 1 ? "person" : "people") since you reported", systemImage: "shield.lefthalf.filled")
+                                .font(.tp(13, .medium)).foregroundStyle(r.warned > 0 ? TP.violet : TP.muted)
+                        }.padding(14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
+                    }
+                } else if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) } else { ProgressView().frame(maxWidth: .infinity) }
+            }.padding(.horizontal, 22).padding(.bottom, 24)
+        }
+        .presentationDetents([.large]).presentationDragIndicator(.visible)
+        .task { do { rows = try await session.myReports() } catch { message = error.localizedDescription } }
+    }
+}
+
+// MARK: - In-the-moment protection: calls, screen sharing, smart cooling-off
+
+enum PaymentGuard {
+    static var onCall: Bool { CXCallObserver().calls.contains { !$0.hasEnded } }
+    static var screenShared: Bool { UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }.contains { $0.isCaptured } }
+}
+/// Set when the person opens "How TraceScore works" or reads the reasons; used by the explanation study.
+enum StudyTracker { static var explanationOpened = false; static var shownAt = Date() }
+
+struct GuardBanner: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            if PaymentGuard.onCall {
+                warn("phone.fill", "You're on a call", "Scammers often stay on the line while you pay. If someone is telling you to pay, hang up first.")
+            }
+            if PaymentGuard.screenShared {
+                warn("rectangle.on.rectangle.angled", "Your screen is being shared or recorded", "Stop screen sharing (AnyDesk, TeamViewer, a video call) before paying. Never pay while someone can see your screen.")
+            }
+        }
+    }
+    private func warn(_ icon: String, _ title: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon).font(.system(size: 16, weight: .bold)).foregroundStyle(.white).frame(width: 38, height: 38).background(TP.bad, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) { Text(title).font(.tp(15, .bold)).foregroundStyle(TP.bad); Text(text).font(.tp(12.5)).foregroundStyle(TP.ink2) }
+            Spacer(minLength: 0)
+        }.padding(14).background(TP.badBg, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.bad.opacity(0.4)))
+    }
+}
+
+struct CoolingOffSheet: View {
+    let seconds: Int
+    let reason: String
+    let onDone: () -> Void
+    let onCancel: () -> Void
+    @State private var remaining = 0
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    var body: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                PixelField(tint: TP.warn).frame(height: 230).mask(RadialGradient(colors: [.black, .clear], center: .center, startRadius: 30, endRadius: 140))
+                Circle().stroke(TP.canvas, lineWidth: 10).frame(width: 180, height: 180)
+                Circle().trim(from: 0, to: CGFloat(remaining) / CGFloat(max(1, seconds))).stroke(TP.violet, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                    .frame(width: 180, height: 180).rotationEffect(.degrees(-90)).animation(.linear(duration: 1), value: remaining)
+                Text(String(format: "%d:%02d", remaining / 60, remaining % 60)).font(.tp(42, .semibold)).foregroundStyle(TP.ink).monospacedDigit()
+            }.padding(.top, 24)
+            Text("Take a moment").font(.tp(26, .semibold)).foregroundStyle(TP.ink)
+            Text(reason).font(.tp(15)).foregroundStyle(TP.muted).multilineTextAlignment(.center).padding(.horizontal, 26)
+            Spacer()
+            Button(remaining > 0 ? "Wait \\(remaining)s" : "Continue to pay") { onDone() }.buttonStyle(NeoButtonStyle()).disabled(remaining > 0).opacity(remaining > 0 ? 0.5 : 1)
+            Button("Cancel payment") { onCancel() }.buttonStyle(NeoButtonStyle(kind: .white))
+        }
+        .padding(.horizontal, 22).padding(.bottom, 16)
+        .presentationDetents([.large]).interactiveDismissDisabled()
+        .onAppear { remaining = seconds }
+        .onReceive(tick) { _ in if remaining > 0 { remaining -= 1 } }
+    }
+}
+
+/// Merchant badge, mule stage and name mismatch, shown under the name on a TraceScore report.
+struct IdentityChips: View {
+    let badge: MerchantBadge?
+    let stage: LifecycleStage?
+    let mismatch: Bool
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                if let badge {
+                    Label(badge.label, systemImage: "checkmark.seal.fill").font(.tp(12, .bold)).foregroundStyle(badge.tier == "verified" ? TP.ink : TP.violet)
+                        .padding(.horizontal, 10).padding(.vertical, 5).background(badge.tier == "verified" ? TP.lime : Color.white)
+                        .overlay(Rectangle().stroke(TP.ink, lineWidth: 2)).background(TP.ink.offset(x: 2, y: 2))
+                }
+                if let stage, stage.stage != "established" {
+                    let bad = stage.stage == "active_mule" || stage.stage == "recruited"
+                    Label(stage.label, systemImage: bad ? "exclamationmark.triangle.fill" : "clock").font(.tp(12, .semibold)).foregroundStyle(bad ? TP.bad : TP.ink2)
+                        .padding(.horizontal, 10).padding(.vertical, 5).background(bad ? TP.badBg : TP.canvas, in: Capsule())
+                }
+            }
+            if mismatch {
+                Label("The name on this QR doesn't match the account", systemImage: "person.crop.circle.badge.exclamationmark").font(.tp(12.5, .semibold))
+                    .foregroundStyle(TP.bad).padding(.horizontal, 12).padding(.vertical, 7).background(TP.badBg, in: Capsule())
+            }
         }
     }
 }

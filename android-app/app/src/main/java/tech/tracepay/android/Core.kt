@@ -42,7 +42,12 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        readShare(intent)
         setContent { TraceApp(this) }
+    }
+    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); readShare(intent) }
+    private fun readShare(intent: android.content.Intent?) {
+        if (intent?.action == android.content.Intent.ACTION_SEND) intent.getStringExtra(android.content.Intent.EXTRA_TEXT)?.let { SharedText.text = it }
     }
 }
 
@@ -102,12 +107,19 @@ data class ExternalPayment(val id: Int, val payee: String, val payeeName: String
 data class Factor(val code: String, val label: String, val points: Int, val detail: String)
 data class RiskReport(val name: String, val ref: String, val member: Boolean, val verified: Boolean, val score: Int, val band: String, val title: String,
                       val advice: String, val factors: List<Factor>, val counterfactuals: List<String>, val reports: Int, val records: Int,
-                      val confidence: Double, val shield: List<String>)
+                      val confidence: Double, val shield: List<String>,
+                      val cooling: Int = 0, val stageCode: String = "", val stageLabel: String = "", val badgeTier: String? = null, val badgeLabel: String? = null,
+                      val mismatch: Boolean = false)
 
 class ApiError(message: String, val code: Int) : Exception(message)
 
 /** The signed-in connection, for screens that need it without passing it through every layer (e.g. the scoring rules sheet). */
 object CurrentApi { var api: TraceApi? = null }
+
+/** Text shared into trace.pay from another app (share-to-check). */
+object SharedText { var text: String? = null }
+/** Explanation study: did the person open the explanation before deciding? */
+object StudyTracker { var explanationOpened = false; var shownAt = System.currentTimeMillis() }
 
 private fun JSONObject.str(k: String): String = if (isNull(k)) "" else optString(k)
 
@@ -161,7 +173,10 @@ class TraceApi(private val context: Context) {
     suspend fun createProfile(name: String, dob: String, gender: String, photo: File) = withContext(Dispatchers.IO) {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM).addFormDataPart("full_name", name).addFormDataPart("date_of_birth", dob)
             .addFormDataPart("gender", gender).addFormDataPart("consent_profile", "true").addFormDataPart("consent_pilot_ledger", "true")
-            .addFormDataPart("face_photo", photo.name, photo.asRequestBody("image/jpeg".toMediaType())).build()
+            .apply {
+                if (photo.name.endsWith(".mp4")) addFormDataPart("face_video", photo.name, photo.asRequestBody("video/mp4".toMediaType()))
+                else addFormDataPart("face_photo", photo.name, photo.asRequestBody("image/jpeg".toMediaType()))
+            }.build()
         val req = Request.Builder().url(API.trimEnd('/') + "/api/v1/pilot/profile").header("Authorization", "Bearer $token").post(body).build()
         client.newCall(req).execute().use { r ->
             if (!r.isSuccessful) throw ApiError(try { JSONObject(r.body?.string().orEmpty()).optString("detail", "Couldn't save your profile") } catch (_: Exception) { "Couldn't save your profile" }, r.code)
@@ -195,7 +210,9 @@ class TraceApi(private val context: Context) {
                 band = o.str("band").ifBlank { "insufficient_information" }, title = v?.str("title") ?: "Not enough history",
                 advice = v?.str("advice") ?: "Pay only people you know.", factors = factors, counterfactuals = (0 until cf.length()).map { cf.getString(it) },
                 reports = o.optJSONObject("community")?.optInt("reports") ?: 0, records = o.optJSONObject("history")?.optInt("records") ?: 0,
-                confidence = o.optDouble("confidence", 0.0), shield = sh?.let { a -> (0 until a.length()).map { a.getJSONObject(it).str("text") } } ?: emptyList())
+                confidence = o.optDouble("confidence", 0.0), shield = sh?.let { a -> (0 until a.length()).map { a.getJSONObject(it).str("text") } } ?: emptyList(),
+                cooling = o.optInt("cooling_seconds", 0), stageCode = o.optJSONObject("stage")?.str("stage") ?: "", stageLabel = o.optJSONObject("stage")?.str("label") ?: "",
+                badgeTier = o.optJSONObject("badge")?.str("tier"), badgeLabel = o.optJSONObject("badge")?.str("label"), mismatch = o.optBoolean("name_mismatch"))
         } catch (e: ApiError) {
             if (e.code == 401 || e.code == 400) throw e
             val req = JSONObject().put("recipient_ref", ref); amount.toBigDecimalOrNull()?.let { req.put("amount", it.toPlainString()) }
@@ -244,6 +261,25 @@ class TraceApi(private val context: Context) {
         call("/api/v1/auth/password/reset", "POST", JSONObject().put("identifier", identifier).put("code", code).put("new_password", newPassword).toString())
     }
     suspend fun scoringModel(): JSONObject = JSONObject(call("/api/v1/scoring/model"))
+    // TraceID, fraud intelligence, recovery, research (v1.1)
+    suspend fun traceIdCheck(video: File): JSONObject = withContext(Dispatchers.IO) {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM).addFormDataPart("face_video", video.name, video.asRequestBody("video/mp4".toMediaType())).build()
+        val req = Request.Builder().url(API.trimEnd('/') + "/api/v1/traceid/check").header("Authorization", "Bearer $token").post(body).build()
+        client.newCall(req).execute().use { r ->
+            val text = r.body?.string().orEmpty()
+            if (!r.isSuccessful) throw ApiError(try { JSONObject(text).optString("detail", "Couldn't check the video") } catch (_: Exception) { "Couldn't check the video" }, r.code)
+            JSONObject(text)
+        }
+    }
+    suspend fun analyzeMessage(text: String): JSONObject = JSONObject(call("/api/v1/intel/message", "POST", JSONObject().put("text", text).toString()))
+    suspend fun recoveryPack(paymentId: Int?, transferRef: String?): JSONObject =
+        JSONObject(call("/api/v1/recovery/pack?" + (paymentId?.let { "payment_id=$it" } ?: "transfer_ref=${Uri.encode(transferRef ?: "")}")))
+    suspend fun myReports(): JSONArray = JSONArray(call("/api/v1/community/reports/mine"))
+    /** Explanation study: what the person did after seeing a TraceScore report. Best effort. */
+    suspend fun logDecision(ref: String, score: Int, band: String, action: String, explained: Boolean, seconds: Double) {
+        runCatching { call("/api/v1/research/decision", "POST", JSONObject().put("ref", ref).put("score", score).put("band", band).put("action", action)
+            .put("explanation_opened", explained).put("seconds_on_report", seconds).toString()) }
+    }
     suspend fun sendEmailCode(name: String) { call("/api/v1/auth/email/send-otp", "POST", JSONObject().put("full_name", name).toString()) }
     suspend fun verifyEmailCode(code: String) { call("/api/v1/auth/email/verify-otp", "POST", JSONObject().put("code", code).toString()) }
 }

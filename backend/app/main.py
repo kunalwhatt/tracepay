@@ -27,10 +27,10 @@ from .gemini_service import suggest_mapping, enabled as gemini_enabled, status a
 from . import schema_agent, assistant as tp_assistant
 from .blob_service import upload_raw as upload_raw_blob
 from .ids import normalize_tracepay_id, parse_upi
-from . import community
+from . import community, intel, liveness, research
 from .models import ScamReport, ExternalPayment
 
-APP_VERSION = "6.1.3"
+APP_VERSION = "1.1.0"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
@@ -303,6 +303,9 @@ def startup():
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_mobile ON users (mobile)",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile_verified BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE pilot_profiles ADD COLUMN IF NOT EXISTS face_signature TEXT",
+            "ALTER TABLE pilot_profiles ADD COLUMN IF NOT EXISTS liveness VARCHAR(32)",
+            "ALTER TABLE pilot_profiles ADD COLUMN IF NOT EXISTS identity_review BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE external_payments ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ",
             "ALTER TABLE external_payments ADD COLUMN IF NOT EXISTS payee_mobile VARCHAR(10)",
         ):
@@ -741,7 +744,8 @@ def admin_accounts(db: Session = Depends(get_db), user: User = Depends(require_r
         synthetic = u.email.endswith("@mobile.tracepay.app")
         out.append({"id": u.id, "email": None if synthetic else u.email, "mobile": getattr(u, "mobile", None), "role": u.role, "active": u.active,
                     "email_verified": None if synthetic else bool(getattr(u, "email_verified", False)),
-                    "name": reveal_pii(p.full_name) if p else None, "vpa_id": vpa, "mobile_verified": bool(getattr(u, "mobile_verified", False)), "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
+                    "name": reveal_pii(p.full_name) if p else None, "vpa_id": vpa, "mobile_verified": bool(getattr(u, "mobile_verified", False)),
+                    "liveness": getattr(p, "liveness", None) if p else None, "identity_review": bool(getattr(p, "identity_review", False)) if p else False, "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
                     "transfers": db.scalar(select(func.count(PilotTransfer.id)).where(or_(PilotTransfer.sender_vpa == vpa, PilotTransfer.receiver_vpa == vpa))) if vpa else 0,
                     "external_payments": db.scalar(select(func.count(ExternalPayment.id)).where(ExternalPayment.user_id == u.id)) or 0,
                     "logs": db.scalar(select(func.count(AuditEvent.id)).where(AuditEvent.actor_user_id == u.id)) or 0})
@@ -1153,16 +1157,41 @@ def lookup_account(ref: str = Query(..., min_length=3, max_length=600), amount: 
     moves, _ = collect_neighbourhood(db, target, 2, 1200)
     network = tracesense.network_signals(moves) if moves else {}
     trace = tracesense.trace_score(target, moves, network=network)
-    reports = db.scalars(select(ScamReport).where(ScamReport.target_ref == target)).all()
+    all_reports = db.scalars(select(ScamReport).where(ScamReport.target_ref == target)).all()
+    # Reputation: reports from people whose past reports were mostly rejected don't move the score.
+    weights = {}
+    for rid in {r.reporter_user_id for r in all_reports}:
+        past = db.execute(select(ScamReport.status).where(ScamReport.reporter_user_id == rid)).scalars().all()
+        weights[rid] = intel.reporter_weight(sum(1 for x in past if x == "verified"), sum(1 for x in past if x == "rejected"), len(past))
+    reports = [r for r in all_reports if weights.get(r.reporter_user_id, 0.6) >= 0.3]
     complaints = db.scalar(select(func.count(Complaint.id)).where(Complaint.paid_to == target)) or 0
     label_row = db.scalar(select(AccountLabel).where(AccountLabel.account_ref == target))
-    combined = community.combine(trace, community.community_factors(reports, complaints, label_row.label if label_row else None, merchant))
+    real_name = (reveal_pii(member.full_name) if member else None) or (merchant or {}).get("display_name")
+    extra = community.community_factors(reports, complaints, label_row.label if label_row else None, merchant)
+    mismatch = intel.name_mismatch(qr["name"], real_name)
+    if mismatch: extra = extra + [mismatch]
+    if not moves and not member and not merchant: extra = extra + research.cold_start_factors(target)
+    combined = community.combine(trace, extra)
     if not ops:
         for f in combined["factors"]:
             f["detail"] = community.mask(f["detail"])
     shield = trace_shield(db, user, target, amount) if user.role == "pilot_user" else None
     mine = [m for m in moves if target in (m.sender, m.receiver) and m.moved_value]
     active_reports = [r for r in reports if r.status != "rejected"]
+    first_seen = min((m.at for m in mine), default=None); last_seen = max((m.at for m in mine), default=None)
+    stage = intel.lifecycle_stage(len(mine), first_seen, last_seen, {f["code"] for f in combined["factors"]})
+    paid_before = user.role == "pilot_user" and bool(db.scalar(select(func.count(ExternalPayment.id)).where(ExternalPayment.user_id == user.id, ExternalPayment.payee_vpa == target)))
+    cooling = intel.cooling_seconds(combined["score"], combined["band"], not paid_before, float(amount) if amount else None)
+    badge = None
+    if merchant and merchant.get("verified"):
+        badge = {"tier": "verified", "label": "Verified by trace.pay", "detail": "Business identity checked by trace.pay investigators."}
+    elif merchant:
+        badge = {"tier": "registered", "label": "Registered business", "detail": "Registered with trace.pay; not yet verified."}
+    if active_reports and user.role == "pilot_user":
+        db.add(AuditEvent(actor_user_id=user.id, action="lookup.warned", object_ref=target))
+    db.add(AuditEvent(actor_user_id=user.id, action="lookup.score", object_ref=target,
+                      detail=json.dumps({"score": combined["score"], "band": combined["band"], "codes": [f["code"] for f in combined["factors"]]})))
+    db.commit()
     return {
         "ref": target, "qr": {k: qr[k] for k in ("name", "amount", "note", "merchant_code", "txn_ref")}, "is_tracepay": qr["is_tracepay"],
         "display_name": (reveal_pii(member.full_name) if member else None) or (merchant or {}).get("display_name") or qr["name"],
@@ -1172,9 +1201,250 @@ def lookup_account(ref: str = Query(..., min_length=3, max_length=600), amount: 
         "counterfactuals": [community.mask(c) for c in trace.get("counterfactuals", [])] if not ops else trace.get("counterfactuals", []),
         "community": {"reports": len(active_reports), "verified_reports": sum(1 for r in active_reports if r.status == "verified"),
                       "categories": sorted({community.CATEGORIES.get(r.category, "Other") for r in active_reports}), "complaints": complaints},
-        "history": {"records": len(mine), "first_seen": min((m.at for m in mine), default=None), "last_seen": max((m.at for m in mine), default=None)},
+        "history": {"records": len(mine), "first_seen": first_seen, "last_seen": last_seen},
+        "stage": stage, "cooling_seconds": cooling, "badge": badge, "name_mismatch": bool(mismatch),
         "shield": shield, "engine": "TraceScore + community", "disclaimer": "Advisory only. You decide whether to pay.",
     }
+
+
+# ------------------------------------------------------------------------------------------
+# Fraud intelligence: message / link / phone checks, recovery, report outcomes, trends, campaigns, evidence
+# ------------------------------------------------------------------------------------------
+class MessageIn(BaseModel):
+    text: str = Field(min_length=3, max_length=5000)
+
+
+@app.post("/api/v1/intel/message")
+def intel_message(body: MessageIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Check a forwarded SMS / WhatsApp message: scam language plus the TraceScore of every UPI ID inside it."""
+    out = intel.analyze_text(body.text)
+    checks = []
+    for vpa in out["upi_ids"]:
+        try:
+            r = lookup_account(ref=vpa, amount=None, db=db, user=user)
+            checks.append({"ref": vpa, "name": r["display_name"], "score": r["score"], "band": r["band"], "title": r["verdict"]["title"], "reports": r["community"]["reports"]})
+        except HTTPException:
+            continue
+    phones = [intel_phone(number=p, db=db, user=user) for p in out["phones"]]
+    worst = max([out["score"]] + [c["score"] or 0 for c in checks] + [p["score"] for p in phones])
+    band = "high_review" if worst >= 75 else "review" if worst >= 50 else "watch" if worst >= 25 else "low"
+    verdict = {"high_review": "Very likely a scam", "review": "Looks like a scam", "watch": "Be careful", "low": "No scam signs found"}[band]
+    db.add(AuditEvent(actor_user_id=user.id, action="intel.message", object_ref=band, detail=json.dumps({"score": worst}))); db.commit()
+    return {**out, "upi_checks": checks, "phone_checks": phones, "overall": worst, "overall_band": band, "verdict": verdict}
+
+
+class LinkIn(BaseModel):
+    url: str = Field(min_length=3, max_length=2000)
+
+
+@app.post("/api/v1/intel/link")
+def intel_link(body: LinkIn, user: User = Depends(current_user)):
+    return intel.analyze_link(body.url)
+
+
+@app.get("/api/v1/intel/phone")
+def intel_phone(number: str = Query(..., min_length=10, max_length=20), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Risk of a phone number: scam reports on it and on UPI IDs built from it (e.g. 98xxxxxxxx@ybl)."""
+    try: mobile = normalize_mobile(number)
+    except ValueError as e: raise HTTPException(422, str(e))
+    rows = db.scalars(select(ScamReport).where(or_(ScamReport.target_ref == mobile, ScamReport.target_ref.like(mobile + "@%")), ScamReport.status != "rejected")).all()
+    linked = sorted({r.target_ref for r in rows if "@" in r.target_ref})
+    verified = sum(1 for r in rows if r.status == "verified")
+    score = min(100, 15 * len(rows) + 15 * verified)
+    return {"number": mobile if user.role in OPS_ROLES else mobile[:2] + "xxxxxx" + mobile[-2:], "reports": len(rows), "verified_reports": verified,
+            "linked_upi_ids": linked if user.role in OPS_ROLES else [community.mask(x) for x in linked], "score": score,
+            "band": "high_review" if score >= 75 else "review" if score >= 50 else "watch" if score >= 25 else "low"}
+
+
+@app.get("/api/v1/recovery/pack")
+def recovery_pack(payment_id: int | None = Query(None), transfer_ref: str | None = Query(None, max_length=64),
+                  db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Golden-hour pack for a payment the member believes was a scam: complaint text, bank letter, money trail."""
+    if payment_id is not None:
+        p = db.scalar(select(ExternalPayment).where(ExternalPayment.id == payment_id, ExternalPayment.user_id == user.id))
+        if not p: raise HTTPException(404, "Payment not found")
+        payee, name, amount, when, ref, app_name = p.payee_vpa, p.payee_name, p.amount, p.paid_at or p.created_at, p.upi_txn_id, p.app
+    elif transfer_ref:
+        t = db.scalar(select(PilotTransfer).where(PilotTransfer.transfer_ref == transfer_ref, PilotTransfer.sender_user_id == user.id))
+        if not t: raise HTTPException(404, "Payment not found")
+        payee, name, amount, when, ref, app_name = t.receiver_vpa, None, t.amount, t.created_at, t.transfer_ref, "trace.pay"
+    else:
+        raise HTTPException(422, "Choose a payment")
+    profile = db.scalar(select(PilotProfile).where(PilotProfile.user_id == user.id))
+    me = reveal_pii(profile.full_name) if profile else "the complainant"
+    moves, _ = collect_neighbourhood(db, payee, 2, 600)
+    start = when - timedelta(hours=1)
+    hop1 = sorted([m for m in moves if m.sender == payee and m.at >= start and m.moved_value], key=lambda m: m.at)[:10]
+    hop2 = sorted([m for m in moves if m.sender in {h.receiver for h in hop1} and m.at >= start and m.moved_value], key=lambda m: m.at)[:10]
+    mask = (lambda x: x) if user.role in OPS_ROLES else community.mask
+    trail = [{"from": mask(m.sender), "to": mask(m.receiver), "amount": str(m.amount), "at": m.at.isoformat(), "hop": 1 if m in hop1 else 2} for m in hop1 + hop2]
+    stamp = when.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%d %b %Y, %I:%M %p IST")
+    complaint = (f"I, {me}, was cheated in an online payment fraud. On {stamp} I paid ₹{amount} to UPI ID {payee}"
+                 f"{f' ({name})' if name else ''} using {app_name}. UPI reference / UTR: {ref or 'not available'}. "
+                 f"I request that the amount be frozen and recovered, and that action be taken against the account holder.")
+    letter = (f"To the Branch Manager / Grievance Officer,\n\nSubject: Fraudulent UPI transaction, request to block and dispute\n\n"
+              f"I made a UPI payment of ₹{amount} on {stamp} to {payee}{f' ({name})' if name else ''}, reference {ref or 'not available'}. "
+              f"This was a fraud. I have reported it on the National Cyber Crime Reporting Portal (helpline 1930). Please raise a dispute, "
+              f"inform the beneficiary bank to freeze the funds, and share the dispute reference with me.\n\nRegards,\n{me}")
+    db.add(AuditEvent(actor_user_id=user.id, action="recovery.pack", object_ref=payee)); db.commit()
+    return {"payee": payee, "payee_name": name, "amount": str(amount), "paid_at": when.isoformat(), "reference": ref, "app": app_name,
+            "complaint_text": complaint, "bank_letter": letter, "money_trail": trail,
+            "steps": [{"title": "Call 1930 now", "detail": "National cyber-crime helpline. Share the amount, time, UPI ID and reference.", "action": "tel:1930"},
+                      {"title": "File on cybercrime.gov.in", "detail": "Paste the complaint text below; attach your payment screenshot.", "action": "https://cybercrime.gov.in"},
+                      {"title": "Call your bank", "detail": "Ask them to raise a dispute and alert the receiving bank. Use the letter below.", "action": None},
+                      {"title": "Report on trace.pay", "detail": "Warns everyone who tries to pay this account.", "action": "report"}]}
+
+
+@app.get("/api/v1/community/reports/mine")
+def my_reports(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """The member's reports with their outcome and how many people have been warned since."""
+    rows = db.scalars(select(ScamReport).where(ScamReport.reporter_user_id == user.id).order_by(desc(ScamReport.created_at))).all()
+    out = []
+    for r in rows:
+        warned = db.scalar(select(func.count(AuditEvent.id)).where(AuditEvent.action == "lookup.warned", AuditEvent.object_ref == r.target_ref,
+                                                                    AuditEvent.created_at >= r.created_at, AuditEvent.actor_user_id != user.id)) or 0
+        out.append({**_report_json(r, False), "target_ref": r.target_ref, "warned": warned})
+    return out
+
+
+@app.get("/api/v1/intel/trends")
+def intel_trends(days: int = Query(30, ge=7, le=180), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Scam trend radar: reports per day by category, amounts lost and the most-reported accounts."""
+    if user.role not in OPS_ROLES: raise HTTPException(403, "Investigators only")
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = db.scalars(select(ScamReport).where(ScamReport.created_at >= since)).all()
+    by_day, by_cat, top = {}, {}, {}
+    for r in rows:
+        d = r.created_at.date().isoformat()
+        by_day.setdefault(d, {}); by_day[d][r.category] = by_day[d].get(r.category, 0) + 1
+        c = by_cat.setdefault(r.category, {"category": r.category, "label": community.CATEGORIES.get(r.category, "Other"), "reports": 0, "lost": 0.0})
+        c["reports"] += 1; c["lost"] += float(r.amount or 0)
+        top[r.target_ref] = top.get(r.target_ref, 0) + 1
+    messages = db.scalar(select(func.count(AuditEvent.id)).where(AuditEvent.action == "intel.message", AuditEvent.created_at >= since)) or 0
+    warned = db.scalar(select(func.count(AuditEvent.id)).where(AuditEvent.action == "lookup.warned", AuditEvent.created_at >= since)) or 0
+    return {"days": days, "total_reports": len(rows), "total_lost": round(sum(float(r.amount or 0) for r in rows), 2), "messages_checked": messages, "people_warned": warned,
+            "series": [{"date": d, **v} for d, v in sorted(by_day.items())], "categories": sorted(by_cat.values(), key=lambda c: -c["reports"]),
+            "top_accounts": [{"ref": k, "reports": v} for k, v in sorted(top.items(), key=lambda kv: -kv[1])[:10]]}
+
+
+@app.get("/api/v1/intel/campaigns")
+def intel_campaigns(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if user.role not in OPS_ROLES: raise HTTPException(403, "Investigators only")
+    rows = db.scalars(select(ScamReport).where(ScamReport.status != "rejected").order_by(desc(ScamReport.created_at)).limit(2000)).all()
+    data = [{"id": r.id, "target_ref": r.target_ref, "category": r.category, "description": r.description or "", "amount": str(r.amount) if r.amount else None,
+             "created_at": r.created_at.isoformat()} for r in rows]
+    out = intel.campaigns(data)
+    for c in out: c["label"] = community.CATEGORIES.get(c["category"], "Other")
+    return out
+
+
+@app.get("/api/v1/intel/evidence")
+def intel_evidence(ref: str = Query(..., min_length=3, max_length=255), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Evidence package for banks and police: score and reasons, money flow, reports, complaints."""
+    if user.role not in OPS_ROLES: raise HTTPException(403, "Investigators only")
+    look = lookup_account(ref=ref, amount=None, db=db, user=user)
+    target = look["ref"]
+    moves, _ = collect_neighbourhood(db, target, 2, 1500)
+    flows = sorted([m for m in moves if target in (m.sender, m.receiver) and m.moved_value], key=lambda m: m.at)
+    reports = db.scalars(select(ScamReport).where(ScamReport.target_ref == target)).all()
+    complaints = db.scalars(select(Complaint).where(Complaint.paid_to == target)).all()
+    db.add(AuditEvent(actor_user_id=user.id, action="intel.evidence", object_ref=target)); db.commit()
+    inflow = sum(float(m.amount) for m in flows if m.receiver == target); outflow = sum(float(m.amount) for m in flows if m.sender == target)
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "generated_by": user.email, "account": target, "name": look["display_name"],
+            "score": look["score"], "band": look["band"], "stage": look["stage"], "factors": look["factors"],
+            "summary": {"payments": len(flows), "inflow": round(inflow, 2), "outflow": round(outflow, 2), "payers": len({m.sender for m in flows if m.receiver == target}),
+                        "payees": len({m.receiver for m in flows if m.sender == target}), "first": flows[0].at.isoformat() if flows else None, "last": flows[-1].at.isoformat() if flows else None},
+            "flows": [{"from": m.sender, "to": m.receiver, "amount": str(m.amount), "at": m.at.isoformat(), "ref": m.ref} for m in flows[:300]],
+            "reports": [_report_json(r, True) for r in reports],
+            "complaints": [{"id": c.id, "amount": str(getattr(c, "amount", "") or ""), "created_at": c.created_at.isoformat() if getattr(c, "created_at", None) else None} for c in complaints]}
+
+
+# ------------------------------------------------------------------------------------------
+# Research lab: adversary simulation, learned baseline, drift, explanation study, dataset
+# ------------------------------------------------------------------------------------------
+_research_cache: dict = {}
+
+
+def _cached(key, fn):
+    if key not in _research_cache: _research_cache[key] = fn()
+    return _research_cache[key]
+
+
+@app.get("/api/v1/research/adversary")
+def research_adversary(seed: int = Query(42, ge=1, le=10_000), user: User = Depends(require_roles(*OPS_ROLES))):
+    return _cached(("adv", seed), lambda: {"seed": seed, "results": research.adversary(seed)})
+
+
+@app.get("/api/v1/research/learned")
+def research_learned(user: User = Depends(require_roles(*OPS_ROLES))):
+    return _cached(("learned",), research.learned_baseline)
+
+
+@app.get("/api/v1/research/dataset.csv")
+def research_dataset(seed: int = Query(42, ge=1, le=10_000), user: User = Depends(require_roles(*OPS_ROLES))):
+    return Response(content=research.dataset_csv(seed), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="tracebench_seed{seed}.csv"'})
+
+
+@app.get("/api/v1/research/drift")
+def research_drift(db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    """Has the score distribution or how often each signal fires changed this week vs the previous four weeks?"""
+    now = datetime.now(timezone.utc)
+    rows = db.execute(select(AuditEvent.created_at, AuditEvent.detail).where(AuditEvent.action == "lookup.score", AuditEvent.created_at >= now - timedelta(days=35))).all()
+    recent, base, rc, bc = [], [], {}, {}
+    for at, detail in rows:
+        try: d = json.loads(detail or "{}")
+        except ValueError: continue
+        at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+        bucket, counts = (recent, rc) if at >= now - timedelta(days=7) else (base, bc)
+        if d.get("score") is not None: bucket.append(d["score"])
+        for c in d.get("codes", []): counts[c] = counts.get(c, 0) + 1
+    value = research.psi(base, recent)
+    signals = sorted({*rc, *bc})
+    rate = lambda counts, n: round(counts / n, 3) if n else 0.0
+    return {"psi": value, "status": "stable" if value < 0.1 else "moderate drift" if value < 0.25 else "significant drift",
+            "recent_checks": len(recent), "baseline_checks": len(base),
+            "recent_avg": round(sum(recent) / len(recent), 1) if recent else None, "baseline_avg": round(sum(base) / len(base), 1) if base else None,
+            "signals": [{"code": c, "recent_rate": rate(rc.get(c, 0), len(recent)), "baseline_rate": rate(bc.get(c, 0), len(base))} for c in signals]}
+
+
+class DecisionIn(BaseModel):
+    ref: str = Field(min_length=3, max_length=255)
+    score: int | None = Field(default=None, ge=0, le=100)
+    band: str = Field(default="", max_length=24)
+    action: str = Field(pattern="^(pay|cancel|report)$")
+    explanation_opened: bool = False
+    seconds_on_report: float = Field(default=0, ge=0, le=3600)
+
+
+@app.post("/api/v1/research/decision", status_code=201)
+def research_decision(body: DecisionIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Explanation study: what people did after seeing a TraceScore report (anonymous to investigators)."""
+    db.add(AuditEvent(actor_user_id=user.id, action="research.decision", object_ref=body.band or "unknown",
+                      detail=json.dumps({"score": body.score, "action": body.action, "explained": body.explanation_opened, "secs": round(body.seconds_on_report, 1)})))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/v1/research/study")
+def research_study(db: Session = Depends(get_db), user: User = Depends(require_roles(*OPS_ROLES))):
+    """Do explanations change behaviour? Pay-through rate by risk band, with vs without opening the explanation."""
+    rows = db.execute(select(AuditEvent.object_ref, AuditEvent.detail).where(AuditEvent.action == "research.decision")).all()
+    table: dict = {}
+    for band, detail in rows:
+        try: d = json.loads(detail or "{}")
+        except ValueError: continue
+        key = (band, bool(d.get("explained")))
+        t = table.setdefault(key, {"band": band, "explanation_opened": key[1], "decisions": 0, "paid": 0, "cancelled": 0, "reported": 0, "secs": 0.0})
+        t["decisions"] += 1; t["secs"] += float(d.get("secs") or 0)
+        t[{"pay": "paid", "cancel": "cancelled", "report": "reported"}.get(d.get("action"), "cancelled")] += 1
+    out = []
+    for t in table.values():
+        t["pay_through_rate"] = round(t["paid"] / t["decisions"], 3) if t["decisions"] else 0.0
+        t["avg_seconds"] = round(t.pop("secs") / t["decisions"], 1) if t["decisions"] else 0.0
+        out.append(t)
+    order = {"high_review": 0, "review": 1, "watch": 2, "low": 3}
+    return {"total": sum(t["decisions"] for t in out), "groups": sorted(out, key=lambda t: (order.get(t["band"], 9), not t["explanation_opened"]))}
 
 
 class CommunityReportIn(BaseModel):
@@ -1753,9 +2023,11 @@ def get_pilot_profile(db: Session = Depends(get_db), user: User = Depends(curren
 async def create_pilot_profile(
     full_name: str = Form(...), date_of_birth: str = Form(...), gender: str = Form(...),
     consent_profile: bool = Form(...), consent_pilot_ledger: bool = Form(...),
-    face_photo: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(current_user)
+    face_photo: UploadFile | None = File(None), face_video: UploadFile | None = File(None),
+    db: Session = Depends(get_db), user: User = Depends(current_user)
 ):
-    """Create a complete profile only after validating and encrypting a single-face photo."""
+    """Create a profile after TraceID: a 5-second video selfie proves a live person (blink check), and the face is matched
+    against every member so one person can hold only one trace.pay ID. (A single photo is still accepted from older apps.)"""
     full_name = full_name.strip()
     if len(full_name) < 2 or len(full_name) > 160 or not full_name[0].isalpha() or not all(ch.isalpha() or ch in " .’'‑-" for ch in full_name):
         raise HTTPException(422, "Enter a valid full name without numbers")
@@ -1769,22 +2041,43 @@ async def create_pilot_profile(
         raise HTTPException(400, "Please confirm the required profile and service consents")
     if db.scalar(select(PilotProfile).where(PilotProfile.user_id == user.id)):
         raise HTTPException(409, "A profile is already linked to this account")
-    content_type = (face_photo.content_type or "").lower()
-    allowed_types = {"image/jpeg": ("jpg",), "image/png": ("png",), "image/webp": ("webp",)}
-    if content_type not in allowed_types: raise HTTPException(415, "Photo must be JPEG, PNG or WebP")
-    max_bytes = 4 * 1024 * 1024
-    raw = await face_photo.read(max_bytes + 1)
-    if not raw or len(raw) > max_bytes: raise HTTPException(413, "Photo must be between 1 byte and 4 MB")
-    signatures = {"image/jpeg": raw.startswith(b"\xff\xd8\xff"), "image/png": raw.startswith(b"\x89PNG\r\n\x1a\n"), "image/webp": len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"}
-    if not signatures.get(content_type, False): raise HTTPException(415, "The uploaded file content does not match its image format")
-    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if decoded is None: raise HTTPException(422, "The photo could not be decoded. Try another image.")
-    height, width = decoded.shape[:2]
-    if width < 160 or height < 160 or width > 8000 or height > 8000: raise HTTPException(422, "Photo dimensions must be between 160 and 8000 pixels")
-    gray = cv2.cvtColor(decoded, cv2.COLOR_BGR2GRAY)
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
-    if len(faces) != 1: raise HTTPException(422, "Please ensure only your face is clearly visible in the photo (exactly one face is required). Try good lighting and remove sunglasses or hats.")
+    live_note = "photo"
+    if face_video is not None:
+        raw_video = await face_video.read(25 * 1024 * 1024 + 1)
+        if not raw_video or len(raw_video) > 25 * 1024 * 1024: raise HTTPException(413, "The video must be under 25 MB")
+        result = liveness.analyze_video(raw_video)
+        if not result.live: raise HTTPException(422, result.reason)
+        decoded, face = result.best_frame, result.best_face
+        ok, buf = cv2.imencode(".jpg", decoded, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        raw = buf.tobytes()
+        live_note = f"video:{result.blinks} blink{'s' if result.blinks != 1 else ''}"
+    elif face_photo is not None:
+        content_type = (face_photo.content_type or "").lower()
+        if content_type not in {"image/jpeg", "image/png", "image/webp"}: raise HTTPException(415, "Photo must be JPEG, PNG or WebP")
+        raw = await face_photo.read(4 * 1024 * 1024 + 1)
+        if not raw or len(raw) > 4 * 1024 * 1024: raise HTTPException(413, "Photo must be between 1 byte and 4 MB")
+        decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if decoded is None: raise HTTPException(422, "The photo could not be decoded. Try another image.")
+        face = liveness.detect_single_face(decoded)
+        if face is None: raise HTTPException(422, "Please ensure only your face is clearly visible (exactly one face). Try good lighting and remove sunglasses or hats.")
+    else:
+        raise HTTPException(422, "Record the 5-second video selfie")
+    # One person, one trace.pay ID
+    sig_method, sig = liveness.signature(decoded, face)
+    duplicate_of, best_sim = None, 0.0
+    for other in db.scalars(select(PilotProfile).where(PilotProfile.face_signature.is_not(None))):
+        try: data = json.loads(reveal_pii(other.face_signature))
+        except Exception: continue
+        same, sim = liveness.is_same_person(sig_method, sig, data.get("m", ""), data.get("v", []))
+        if same and sim > best_sim: duplicate_of, best_sim = other, sim
+    review = False
+    if duplicate_of is not None:
+        db.add(AuditEvent(actor_user_id=user.id, action="traceid.duplicate", object_ref=duplicate_of.vpa_id,
+                          detail=json.dumps({"similarity": round(best_sim, 3), "method": sig_method})))
+        if sig_method == "sface":
+            db.commit()
+            raise HTTPException(409, "This face is already linked to another trace.pay ID. One person can have only one account. If this is a mistake, contact support.")
+        review = True
     assigned_vpa = generate_pilot_vpa(db, user, full_name)
     photo_key = uuid4().hex + ".enc"
     photo_dir = Path(os.getenv("PRIVATE_PHOTO_DIR", "/var/lib/tracepay/private-photos"))
@@ -1796,7 +2089,8 @@ async def create_pilot_profile(
             photo_file.write(encrypted_photo)
         profile = PilotProfile(user_id=user.id, full_name=protect_pii(full_name), date_of_birth=protect_pii(date_of_birth),
             vpa_id=assigned_vpa, bank_name=protect_pii(""), account_last4=protect_pii(""), participant_type="pilot_user",
-            selfie_status="face_detected", gender=gender, photo_storage_key=photo_key, face_count=1)
+            selfie_status="live_verified" if live_note.startswith("video") else "face_detected", gender=gender, photo_storage_key=photo_key, face_count=1,
+            face_signature=protect_pii(json.dumps({"m": sig_method, "v": sig})), liveness=live_note, identity_review=review)
         db.add(profile); ensure_wallet(db, assigned_vpa); db.commit(); db.refresh(profile)
     except IntegrityError:
         db.rollback(); photo_path.unlink(missing_ok=True)
@@ -1804,10 +2098,27 @@ async def create_pilot_profile(
     except Exception:
         db.rollback(); photo_path.unlink(missing_ok=True); raise
     event = activity_event(db, actor_user_id=user.id, event_type="profile.created", object_ref=assigned_vpa,
-        details={"profile_id": profile.id, "identity_assigned": True, "photo_verified": True, "face_count": 1})
+        details={"profile_id": profile.id, "identity_assigned": True, "liveness": live_note, "signature": sig_method, "identity_review": review})
     await hub.publish({"type": "activity", "id": event.id, "event_type": event.action, "object_ref": event.object_ref,
         "actor_user_id": user.id, "details": json.loads(event.detail), "created_at": event.created_at.isoformat()})
     return pilot_profile_json(profile, user.email, include_private=True)
+
+@app.post("/api/v1/traceid/check")
+async def traceid_check(face_video: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Run TraceID on a recorded video: liveness (blinks, motion, one face) and whether this face already has an account."""
+    raw_video = await face_video.read(25 * 1024 * 1024 + 1)
+    if not raw_video or len(raw_video) > 25 * 1024 * 1024: raise HTTPException(413, "The video must be under 25 MB")
+    r = liveness.analyze_video(raw_video)
+    out = {**r.summary(), "method": liveness.method(), "duplicate": False}
+    if r.live:
+        m, sig = liveness.signature(r.best_frame, r.best_face)
+        for other in db.scalars(select(PilotProfile).where(PilotProfile.face_signature.is_not(None), PilotProfile.user_id != user.id)):
+            try: data = json.loads(reveal_pii(other.face_signature))
+            except Exception: continue
+            same, _ = liveness.is_same_person(m, sig, data.get("m", ""), data.get("v", []))
+            if same and m == "sface": out["duplicate"] = True; out["live"] = False; out["reason"] = "This face is already linked to another trace.pay ID."; break
+    return out
+
 
 @app.get("/api/v1/pilot/profile/photo")
 def get_own_profile_photo(db: Session = Depends(get_db), user: User = Depends(current_user)):

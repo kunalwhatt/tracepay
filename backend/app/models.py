@@ -116,6 +116,9 @@ class PilotProfile(Base):
     gender: Mapped[str] = mapped_column(String(32), default="Prefer not to say")
     photo_storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     face_count: Mapped[int] = mapped_column(default=1)
+    face_signature: Mapped[str | None] = mapped_column(Text, nullable=True)       # encrypted JSON {"m": method, "v": [...]}
+    liveness: Mapped[str | None] = mapped_column(String(32), nullable=True)        # e.g. "video:2 blinks"
+    identity_review: Mapped[bool] = mapped_column(Boolean, default=False)           # possible duplicate person, for investigators
     consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

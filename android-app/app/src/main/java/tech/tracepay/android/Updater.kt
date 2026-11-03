@@ -37,7 +37,10 @@ object Updater {
                 val tag = o.optString("tag_name")
                 val assets = o.optJSONArray("assets") ?: return@withContext null
                 val apk = (0 until assets.length()).map { assets.getJSONObject(it) }.firstOrNull { it.optString("name").endsWith(".apk") } ?: return@withContext null
-                if (!isNewer(tag, BuildConfig.VERSION_NAME)) return@withContext null
+                // Release files are named tracepay-<build>.apk; builds always increase, so compare those (not version names).
+                val build = Regex("tracepay-(\\d+)\\.apk").find(apk.optString("name"))?.groupValues?.get(1)?.toIntOrNull()
+                if (build != null) { if (build <= BuildConfig.VERSION_CODE) return@withContext null }
+                else if (!isNewer(tag, BuildConfig.VERSION_NAME)) return@withContext null
                 AppUpdate(tag.removePrefix("v"), apk.optString("browser_download_url"), o.optString("body").take(400))
             }
         } catch (_: Exception) { null }

@@ -6,8 +6,8 @@ android {
     defaultConfig {
         applicationId = "tech.tracepay.android"; minSdk = 26; targetSdk = 35
         // CI sets these from the git tag (v6.0.2 -> 6.0.2) and the run number, so every release is newer than the last.
-        versionCode = (System.getenv("TP_VERSION_CODE") ?: "62").toInt()
-        versionName = System.getenv("TP_VERSION_NAME") ?: "6.0.2"
+        versionCode = (System.getenv("TP_VERSION_CODE") ?: "1100").toInt()
+        versionName = System.getenv("TP_VERSION_NAME") ?: "1.1.0"
         buildConfigField("String", "UPDATE_REPO", "\"kunalwhatt/tracepay\"")
     }
     // One permanent signing key (from GitHub secrets) so installed apps accept updates.
@@ -54,6 +54,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.4.1")  // camera-first QR scanner and live selfie
     implementation("androidx.camera:camera-lifecycle:1.4.1")
     implementation("androidx.camera:camera-view:1.4.1")
+    implementation("androidx.camera:camera-video:1.4.1")   // TraceID 5-second video selfie
     implementation("com.google.mlkit:barcode-scanning:17.3.0")  // on-device QR decoding
     implementation("com.google.mlkit:face-detection:16.1.7")    // on-device live face guidance
     implementation("androidx.exifinterface:exifinterface:1.3.7")

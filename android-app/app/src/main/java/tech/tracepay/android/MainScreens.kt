@@ -109,6 +109,8 @@ fun MainShell(api: TraceApi, activity: MainActivity, profile: Profile, onSignOut
     var detail by remember { mutableStateOf<ActivityItem?>(null) }
     var report by remember { mutableStateOf<String?>(null) }
     val ctx = LocalContext.current
+    var sharedText by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { SharedText.text?.let { sharedText = it; SharedText.text = null; tab = Tab.Check } }
     var update by remember { mutableStateOf<AppUpdate?>(null) }
     var updateProgress by remember { mutableStateOf<Float?>(null) }
     var updateMsg by remember { mutableStateOf("") }
@@ -170,7 +172,7 @@ fun MainShell(api: TraceApi, activity: MainActivity, profile: Profile, onSignOut
                     onCheck = { tab = Tab.Check }, onQr = { myQr = true }, onHistory = { tab = Tab.Activity }, onHelp = { help = true }, onItem = { detail = it },
                     update = update, updateProgress = updateProgress, updateMsg = updateMsg, onUpdate = { installUpdate() })
                 Tab.Activity -> ActivityScreen(items) { detail = it }
-                Tab.Check -> CheckScreen(api) { report = it }
+                Tab.Check -> CheckScreen(api, sharedText) { report = it }
                 Tab.Profile -> ProfileScreen(activity, profile, onQr = { myQr = true }, onHelp = { help = true }, onSignOut = onSignOut)
             }
         }
@@ -384,6 +386,11 @@ fun ActivityScreen(items: List<ActivityItem>, onItem: (ActivityItem) -> Unit) {
 @Composable
 fun PaymentDetailSheet(item: ActivityItem, onDismiss: () -> Unit, onReport: () -> Unit) {
     val ctx = LocalContext.current
+    var recovery by remember { mutableStateOf(false) }
+    if (recovery) CurrentApi.api?.let { api ->
+        RecoverySheet(api, if (item.id.startsWith("ext-")) item.id.removePrefix("ext-").toIntOrNull() else null, if (item.id.startsWith("tp-")) item.ref else null,
+            onReport = { recovery = false; onReport() }, onDismiss = { recovery = false })
+    }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color.White, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
             AvatarBox(item.title, 64.dp)
@@ -404,6 +411,7 @@ fun PaymentDetailSheet(item: ActivityItem, onDismiss: () -> Unit, onReport: () -
                 Row { TText("App", 14.sp, color = TP.muted); Spacer(Modifier.weight(1f)); TText(item.via, 14.sp) }
             }
             NeoButton("Share receipt", kind = NeoKind.White, icon = Icons.Default.Share) { share(ctx, "trace.pay receipt: ${rupees(item.amount)} ${if (item.incoming) "from" else "to"} ${item.title} (${item.ref})") }
+            if (!item.incoming) NeoButton("I was scammed: get help now", kind = NeoKind.Danger, icon = Icons.Default.Timer) { recovery = true }
             if (!item.incoming) NeoButton("Report a problem", kind = NeoKind.White, icon = Icons.Default.Flag) { onReport() }
             Spacer(Modifier.height(16.dp))
         }
@@ -459,12 +467,13 @@ fun RiskReportView(r: RiskReport) {
                 TText(r.name, 20.sp, FontWeight.SemiBold); if (r.verified) { Spacer(Modifier.width(6.dp)); Icon(Icons.Default.Verified, "Verified merchant", tint = Color(0xFF1D9BF0)) }
             }
             TText(r.ref, 13.sp, color = TP.muted)
+            Spacer(Modifier.height(6.dp)); IdentityChips(r)
         }
         TraceScoreBadge()
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             PixelField(Risk.color(r.band), Modifier.fillMaxWidth().height(290.dp))
             ScoreMeter(r.score, r.band)
-            Box(Modifier.align(Alignment.TopEnd).size(44.dp).clip(CircleShape).background(Color.White).border(1.dp, TP.hair, CircleShape).clickable { rules = true }, contentAlignment = Alignment.Center) {
+            Box(Modifier.align(Alignment.TopEnd).size(44.dp).clip(CircleShape).background(Color.White).border(1.dp, TP.hair, CircleShape).clickable { rules = true; StudyTracker.explanationOpened = true }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Info, "How the score works", tint = TP.violet)
             }
         }
@@ -482,7 +491,7 @@ fun RiskReportView(r: RiskReport) {
         if (r.shield.isNotEmpty()) Section("For this payment") { r.shield.forEach { Row(Modifier.padding(vertical = 10.dp)) { Icon(Icons.Default.Warning, null, tint = TP.warn); Spacer(Modifier.width(10.dp)); TText(it, 14.sp, color = TP.ink2) } } }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             TText("Why this score", 18.sp, FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            TText("How it's scored", 13.sp, FontWeight.Medium, TP.violet, Modifier.clickable { rules = true }.padding(6.dp))
+            TText("How it's scored", 13.sp, FontWeight.Medium, TP.violet, Modifier.clickable { rules = true; StudyTracker.explanationOpened = true }.padding(6.dp))
         }
         if (raises.isNotEmpty()) Section("What raises the risk") { raises.forEachIndexed { i, f -> if (i < shown) FactorRow(f) } }
         if (lowers.isNotEmpty()) Section("What lowers the risk") { lowers.forEachIndexed { i, f -> if (raises.size + i < shown) FactorRow(f) } }
@@ -573,14 +582,16 @@ fun RiskSheet(r: RiskReport, payLabel: String, onPay: () -> Unit, onCancel: () -
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     fun close(then: () -> Unit) { scope.launch { state.hide() }.invokeOnCompletion { then() } }
+    LaunchedEffect(r) { StudyTracker.explanationOpened = false; StudyTracker.shownAt = System.currentTimeMillis() }
+    fun log(action: String) { val api = CurrentApi.api ?: return; scope.launch { api.logDecision(r.ref, r.score, r.band, action, StudyTracker.explanationOpened, (System.currentTimeMillis() - StudyTracker.shownAt) / 1000.0) } }
     ModalBottomSheet(onDismissRequest = onCancel, sheetState = state, containerColor = Color.White) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
-            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 8.dp)) { RiskReportView(r) }
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 8.dp)) { GuardBanner(); Spacer(Modifier.height(10.dp)); RiskReportView(r) }
             Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                NeoButton(payLabel, kind = if (r.band == "review" || r.band == "high_review") NeoKind.Danger else NeoKind.Ink, icon = Icons.Default.ArrowForward) { close(onPay) }
+                NeoButton(payLabel, kind = if (r.band == "review" || r.band == "high_review") NeoKind.Danger else NeoKind.Ink, icon = Icons.Default.ArrowForward) { log("pay"); close(onPay) }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    NeoButton("Cancel", Modifier.weight(1f), NeoKind.White) { close(onCancel) }
-                    NeoButton("Report", Modifier.weight(1f), NeoKind.White, Icons.Default.Flag) { close(onReport) }
+                    NeoButton("Cancel", Modifier.weight(1f), NeoKind.White) { log("cancel"); close(onCancel) }
+                    NeoButton("Report", Modifier.weight(1f), NeoKind.White, Icons.Default.Flag) { log("report"); close(onReport) }
                 }
             }
         }
@@ -591,11 +602,12 @@ fun RiskSheet(r: RiskReport, payLabel: String, onPay: () -> Unit, onCancel: () -
 // Check
 // ---------------------------------------------------------------------------------------------
 @Composable
-fun CheckScreen(api: TraceApi, onReport: (String) -> Unit) {
+fun CheckScreen(api: TraceApi, shared: String = "", onReport: (String) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { ctx.getSharedPreferences("tracepay_settings", 0) }
     var recent by remember { mutableStateOf(prefs.getString("recent", "")!!.split("\n").filter { it.isNotBlank() }) }
+    var mode by remember { mutableIntStateOf(if (shared.isNotBlank()) 1 else 0) }
     var query by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<RiskReport?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -610,8 +622,10 @@ fun CheckScreen(api: TraceApi, onReport: (String) -> Unit) {
         }
     }
     Column(Modifier.fillMaxSize().screenBackground().statusBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        TText("Check any UPI ID", 32.sp, FontWeight.SemiBold)
-        TText("trace.pay, Google Pay, PhonePe, Paytm or a bank.", 15.sp, color = TP.muted)
+        TText(if (mode == 0) "Check any UPI ID" else "Check a message", 32.sp, FontWeight.SemiBold)
+        TText(if (mode == 0) "trace.pay, Google Pay, PhonePe, Paytm or a bank." else "SMS, WhatsApp or Telegram: scam language, links, numbers and UPI IDs.", 15.sp, color = TP.muted)
+        Segment(listOf(Icons.Default.AlternateEmail to "UPI ID", Icons.Default.Sms to "Message"), mode) { mode = it }
+        if (mode == 1) { MessageCheck(api, shared); Spacer(Modifier.height(8.dp)); return@Column }
         TField(query, { query = it.trim() }, "name@okaxis", Icons.Default.Search, keyboard = KeyboardType.Email)
         NeoButton("Check UPI ID", icon = Icons.Default.VerifiedUser, busy = busy, enabled = query.isNotBlank()) { check(query) }
         ErrorLine(message)
@@ -643,6 +657,8 @@ fun ProfileScreen(activity: MainActivity, profile: Profile, onQr: () -> Unit, on
     var cooling by remember { mutableStateOf(prefs.getBoolean("cooling", true)) }
     var limit by remember { mutableIntStateOf(prefs.getInt("limit", 50000)) }
     var confirmOut by remember { mutableStateOf(false) }
+    var myReports by remember { mutableStateOf(false) }
+    if (myReports) CurrentApi.api?.let { MyReportsSheet(it) { myReports = false } }
     Column(Modifier.fillMaxSize().screenBackground().statusBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
         TText("Profile", 32.sp, FontWeight.SemiBold)
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(Brush.linearGradient(listOf(TP.violet, TP.violetDeep))).padding(20.dp)) {
@@ -672,9 +688,13 @@ fun ProfileScreen(activity: MainActivity, profile: Profile, onQr: () -> Unit, on
                 }
             }
         }
-        SettingGroup("App") { SettingRow(Icons.Default.Support, "Help & emergency", "If you've been scammed", onClick = onHelp) { Icon(Icons.Default.ChevronRight, null, tint = TP.faint) } }
+        SettingGroup("App") {
+            SettingRow(Icons.Default.Flag, "My reports", "Outcomes and how many people they warned", onClick = { myReports = true }) { Icon(Icons.Default.ChevronRight, null, tint = TP.faint) }
+            HorizontalDivider(color = TP.hair)
+            SettingRow(Icons.Default.Support, "Help & emergency", "If you've been scammed", onClick = onHelp) { Icon(Icons.Default.ChevronRight, null, tint = TP.faint) }
+        }
         NeoButton("Sign out", kind = NeoKind.White, icon = Icons.Default.Logout) { confirmOut = true }
-        TText("trace.pay · version ${BuildConfig.VERSION_NAME}", 12.5.sp, color = TP.muted, modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
+        TText("trace.pay · v${BuildConfig.VERSION_NAME}", 12.5.sp, color = TP.muted, modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
     }
     if (confirmOut) AlertDialog(onDismissRequest = { confirmOut = false }, title = { Text("Sign out of trace.pay?") },
@@ -766,6 +786,7 @@ fun PayMemberScreen(api: TraceApi, activity: MainActivity, profile: Profile, tra
     var message by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<Transfer?>(null) }
     var remaining by remember { mutableIntStateOf(0) }
+    var coolTotal by remember { mutableIntStateOf(60) }
     val key = remember { UUID.randomUUID().toString() }
     val isNew = transfers.none { it.receiver == vpa && it.status == "SUCCESS" }
     val today = java.time.LocalDate.now()
@@ -833,7 +854,7 @@ fun PayMemberScreen(api: TraceApi, activity: MainActivity, profile: Profile, tra
         }
         "cooling" -> Column(Modifier.fillMaxSize().screenBackground().statusBarsPadding().navigationBarsPadding().padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(Modifier.weight(1f))
-            val totalSecs = prefs.getInt("coolingMinutes", 1) * 60
+            val totalSecs = coolTotal
             Box(Modifier.size(190.dp), contentAlignment = Alignment.Center) {
                 Canvas(Modifier.fillMaxSize()) {
                     drawArc(TP.canvas, 0f, 360f, false, style = Stroke(10.dp.toPx()))
@@ -850,7 +871,9 @@ fun PayMemberScreen(api: TraceApi, activity: MainActivity, profile: Profile, tra
     }
     risk?.let { r ->
         RiskSheet(r, "Pay ${rupees(amount)}",
-            onPay = { risk = null; if (prefs.getBoolean("cooling", true) && isNew && (amount.toDoubleOrNull() ?: 0.0) >= 5000) { remaining = prefs.getInt("coolingMinutes", 1) * 60; step = "cooling" } else send() },
+            onPay = { val server = r.cooling; risk = null
+                val rule = if (prefs.getBoolean("cooling", true) && isNew && (amount.toDoubleOrNull() ?: 0.0) >= 5000) prefs.getInt("coolingMinutes", 1) * 60 else 0
+                if (maxOf(rule, server) > 0) { remaining = maxOf(rule, server); coolTotal = remaining; step = "cooling" } else send() },
             onCancel = { risk = null }, onReport = { risk = null; report = true })
     }
     if (report) ReportSheet(api, vpa) { report = false }
@@ -964,6 +987,7 @@ fun ExternalPayScreen(api: TraceApi, raw: String, onDone: () -> Unit) {
     var risk by remember { mutableStateOf<RiskReport?>(null) }
     var report by remember { mutableStateOf(false) }
     var guide by remember { mutableStateOf(false) }
+    var coolWait by remember { mutableIntStateOf(0) }
     var receipt by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
@@ -1044,7 +1068,9 @@ fun ExternalPayScreen(api: TraceApi, raw: String, onDone: () -> Unit) {
         ErrorLine(message)
         Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lock, null, tint = TP.muted, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)); TText("trace.pay checks the account first. Your UPI PIN is only entered in your UPI app.", 12.5.sp, color = TP.muted) }
     }
-    risk?.let { r -> if (!guide) RiskSheet(r, "Pay ${rupees(amount)} with ${chosen?.label ?: "UPI"}", onPay = { guide = true }, onCancel = { risk = null }, onReport = { report = true }) }
+    if (coolWait > 0) { CoolingOffScreen(coolWait, "TraceScore found warning signs on $payeeName. Scammers rush you, so take a moment before paying.",
+        onDone = { coolWait = 0; guide = true }, onCancel = { coolWait = 0; risk = null }); return }
+    risk?.let { r -> if (!guide) RiskSheet(r, "Pay ${rupees(amount)} with ${chosen?.label ?: "UPI"}", onPay = { if (r.cooling > 0) coolWait = r.cooling else guide = true }, onCancel = { risk = null }, onReport = { report = true }) }
     if (report) ReportSheet(api, vpa) { report = false; risk = null }
     if (guide) ModalBottomSheet(onDismissRequest = { guide = false }, containerColor = Color.White, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         val byPhone = payeeMobile.length == 10
