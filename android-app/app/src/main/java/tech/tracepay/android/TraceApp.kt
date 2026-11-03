@@ -386,10 +386,10 @@ fun SignUpScreen(api: TraceApi, onBack: () -> Unit, onSignedIn: () -> Unit) {
         }
     }
     val titles = listOf(Triple("Create account", "Let's set you up", "Your name, mobile number and email. We'll verify both."),
-        Triple("Verify", "Enter your codes", "We sent a code to +91 $mobile and another to $email."),
+        Triple("Verify", "Enter your OTPs", "We sent a one-time password (OTP) to +91 $mobile and another to $email."),
         Triple("Security", "Create a password", "You'll use it to sign in on a new phone."))
     ScreenColumn(bottom = {
-        NeoButton(when (step) { 1 -> "Send codes"; 2 -> "Continue"; else -> "Create account" }, icon = Icons.Default.ArrowForward, busy = busy,
+        NeoButton(when (step) { 1 -> "Send one-time password (OTP)"; 2 -> "Continue"; else -> "Create account" }, icon = Icons.Default.ArrowForward, busy = busy,
             enabled = when (step) { 1 -> detailsOk; 2 -> verified; else -> passwordOk }) {
             message = ""
             when (step) {
@@ -416,10 +416,10 @@ fun SignUpScreen(api: TraceApi, onBack: () -> Unit, onSignedIn: () -> Unit) {
                 TText("By continuing you agree to the Terms and Privacy Policy.", 12.5.sp, color = TP.muted, modifier = Modifier.padding(top = 14.dp))
             }
             2 -> {
-                CodeBlock(Icons.Default.Sms, "SMS code", "+91 $mobile", smsCode, smsTicket.isNotEmpty()) { smsCode = it; if (it.length == 6) check("sms", it) }
+                CodeBlock(Icons.Default.Sms, "SMS OTP", "+91 $mobile", smsCode, smsTicket.isNotEmpty()) { smsCode = it; if (it.length == 6) check("sms", it) }
                 Spacer(Modifier.height(22.dp))
-                CodeBlock(Icons.Default.Email, "Email code", email, emailCode, emailTicket.isNotEmpty()) { emailCode = it; if (it.length == 6) check("email", it) }
-                TText(if (resendIn > 0) "Resend codes in ${resendIn}s" else "Resend codes", 14.5.sp, FontWeight.Medium, if (resendIn > 0) TP.faint else TP.violet,
+                CodeBlock(Icons.Default.Email, "Email OTP", email, emailCode, emailTicket.isNotEmpty()) { emailCode = it; if (it.length == 6) check("email", it) }
+                TText(if (resendIn > 0) "Resend OTP in ${resendIn}s" else "Resend OTP", 14.5.sp, FontWeight.Medium, if (resendIn > 0) TP.faint else TP.violet,
                     Modifier.fillMaxWidth().clickable(enabled = resendIn == 0 && !busy) { sendCodes() }.padding(top = 18.dp, bottom = 8.dp), TextAlign.Center)
             }
             else -> {
@@ -479,7 +479,7 @@ fun ForgotPasswordScreen(api: TraceApi, onBack: () -> Unit) {
     ScreenColumn(bottom = {
         when {
             done -> NeoButton("Back to sign in") { onBack() }
-            !sent -> NeoButton("Send code", busy = busy, enabled = identifier.length >= 5) { send() }
+            !sent -> NeoButton("Send one-time password (OTP)", busy = busy, enabled = identifier.length >= 5) { send() }
             else -> NeoButton("Update password", busy = busy, enabled = code.length == 6 && strong && password == confirm) {
                 busy = true; message = ""
                 scope.launch { try { api.resetPassword(identifier, code, password); done = true } catch (e: Exception) { message = e.message ?: "Couldn't reset the password" }; busy = false }
@@ -491,7 +491,7 @@ fun ForgotPasswordScreen(api: TraceApi, onBack: () -> Unit) {
             Icon(if (done) Icons.Default.Verified else Icons.Default.Key, null, tint = if (done) TP.good else TP.violet, modifier = Modifier.size(26.dp))
         }
         TText(if (done) "Password updated" else if (sent) "Reset your password" else "Forgot password?", 28.sp, FontWeight.SemiBold, modifier = Modifier.padding(top = 16.dp))
-        TText(if (done) "Sign in with your new password." else if (sent) "Enter the code we sent to ${if (method == 0) "+91 $identifier" else identifier}, then choose a new password."
+        TText(if (done) "Sign in with your new password." else if (sent) "Enter the OTP we sent to ${if (method == 0) "+91 $identifier" else identifier}, then choose a new password."
               else "We'll send a code to your mobile number or email.", 15.sp, color = TP.muted, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp), lineHeight = 21.sp)
         if (!done && !sent) {
             Segment(listOf(Icons.Default.PhoneAndroid to "Mobile", Icons.Default.Email to "Email"), method) { method = it }
@@ -503,7 +503,7 @@ fun ForgotPasswordScreen(api: TraceApi, onBack: () -> Unit) {
             TField(password, { password = it }, "New password (8+ characters)", Icons.Default.Lock, secure = true); Spacer(Modifier.height(12.dp))
             TField(confirm, { confirm = it }, "Confirm new password", Icons.Default.Lock, secure = true)
             TText("Use 8+ characters with an uppercase letter, a number and a symbol.", 12.5.sp, color = if (strong) TP.good else TP.muted, modifier = Modifier.padding(top = 10.dp))
-            TText("Send a new code", 14.5.sp, FontWeight.Medium, TP.violet, Modifier.fillMaxWidth().clickable { send() }.padding(top = 14.dp), TextAlign.Center)
+            TText("Resend OTP", 14.5.sp, FontWeight.Medium, TP.violet, Modifier.fillMaxWidth().clickable { send() }.padding(top = 14.dp), TextAlign.Center)
         }
         Spacer(Modifier.height(12.dp)); ErrorLine(message)
     }

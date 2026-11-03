@@ -497,7 +497,7 @@ struct SignUpScreen: View {
     private var verified: Bool { !emailTicket.isEmpty && !smsTicket.isEmpty }
     private var passwordOK: Bool { strength == 4 && password == confirm }
     private var titles: [(String, String, String)] { [("Create account", "Let's set you up", "Your name, mobile number and email. We'll verify both."),
-        ("Verify", "Enter your codes", "We sent a code to +91 \(cleanMobile) and another to \(email)."),
+        ("Verify", "Enter your OTPs", "We sent a one-time password (OTP) to +91 \(cleanMobile) and another to \(email)."),
         ("Security", "Create a password", "You'll use it to sign in on a new phone.")] }
 
     var body: some View {
@@ -519,10 +519,10 @@ struct SignUpScreen: View {
                         Text("By continuing you agree to the Terms and Privacy Policy.").font(.tp(12.5)).foregroundStyle(TP.muted).padding(.top, 14)
                     } else if step == 2 {
                         VStack(alignment: .leading, spacing: 22) {
-                            codeBlock(icon: "message.fill", title: "SMS code", sub: "+91 \(cleanMobile)", code: $smsCode, done: !smsTicket.isEmpty)
-                            codeBlock(icon: "envelope.fill", title: "Email code", sub: email, code: $emailCode, done: !emailTicket.isEmpty)
+                            codeBlock(icon: "message.fill", title: "SMS OTP", sub: "+91 \(cleanMobile)", code: $smsCode, done: !smsTicket.isEmpty)
+                            codeBlock(icon: "envelope.fill", title: "Email OTP", sub: email, code: $emailCode, done: !emailTicket.isEmpty)
                             Button { Task { await sendCodes() } } label: {
-                                Text(resendIn > 0 ? "Resend codes in \(resendIn)s" : "Resend codes").font(.tp(14.5, .medium)).foregroundStyle(resendIn > 0 ? TP.faint : TP.violet)
+                                Text(resendIn > 0 ? "Resend OTP in \(resendIn)s" : "Resend OTP").font(.tp(14.5, .medium)).foregroundStyle(resendIn > 0 ? TP.faint : TP.violet)
                             }.disabled(resendIn > 0 || busy).frame(maxWidth: .infinity)
                         }
                     } else {
@@ -540,7 +540,7 @@ struct SignUpScreen: View {
             }
             .safeAreaInset(edge: .bottom) {
                 Button { Task { await next() } } label: {
-                    if busy { ProgressView().tint(.white) } else { Label(step == 1 ? "Send codes" : step == 2 ? "Continue" : "Create account", systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }
+                    if busy { ProgressView().tint(.white) } else { Label(step == 1 ? "Send one-time password (OTP)" : step == 2 ? "Continue" : "Create account", systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }
                 }
                 .buttonStyle(NeoButtonStyle())
                 .disabled(busy || !(step == 1 ? detailsOK : step == 2 ? verified : passwordOK))
@@ -1367,8 +1367,12 @@ struct RiskReportView: View {
                 }
                 Text(model.ref).font(.tp(13)).foregroundStyle(TP.muted)
             }
+            TraceScoreBadge()
             ZStack(alignment: .topTrailing) {
-                ScoreMeterView(score: model.score, band: model.band).frame(maxWidth: .infinity)
+                PixelField(tint: Risk.color(model.band)).frame(height: 290).frame(maxWidth: .infinity)
+                    .mask(RadialGradient(colors: [.black, .black.opacity(0.6), .clear], center: .center, startRadius: 40, endRadius: 190))
+                    .allowsHitTesting(false)
+                ScoreMeterView(score: model.score, band: model.band).frame(maxWidth: .infinity).padding(.top, 20)
                 Button { showRules = true } label: {
                     Image(systemName: "info.circle.fill").font(.system(size: 22)).foregroundStyle(TP.violet)
                         .frame(width: 44, height: 44).background(Color.white, in: Circle()).shadow(color: TP.ink.opacity(0.08), radius: 6, y: 2)
@@ -2533,7 +2537,7 @@ struct ForgotPasswordSheet: View {
                 Image(systemName: done ? "checkmark.seal.fill" : "key.fill").font(.system(size: 24)).foregroundStyle(done ? TP.good : TP.violet)
                     .frame(width: 58, height: 58).background(done ? TP.goodBg : TP.violetSoft, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).padding(.top, 28)
                 Text(done ? "Password updated" : sent ? "Reset your password" : "Forgot password?").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
-                Text(done ? "Sign in with your new password." : sent ? "Enter the code we sent to \(method == 0 ? "+91 \(identifier)" : identifier), then choose a new password." : "We'll send a code to your mobile number or email.")
+                Text(done ? "Sign in with your new password." : sent ? "Enter the OTP we sent to \(method == 0 ? "+91 \(identifier)" : identifier), then choose a new password." : "We'll send a code to your mobile number or email.")
                     .font(.tp(15)).foregroundStyle(TP.muted)
                 if done {
                     Button("Back to sign in") { dismiss() }.buttonStyle(NeoButtonStyle())
@@ -2542,7 +2546,7 @@ struct ForgotPasswordSheet: View {
                     if method == 0 { TPField(icon: "iphone", placeholder: "10-digit mobile number", text: $mobile, keyboard: .numberPad, prefix: "+91") }
                     else { TPField(icon: "envelope", placeholder: "Email", text: $email, keyboard: .emailAddress) }
                     if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) }
-                    Button { Task { await send() } } label: { if busy { ProgressView().tint(.white) } else { Text("Send code") } }
+                    Button { Task { await send() } } label: { if busy { ProgressView().tint(.white) } else { Text("Send one-time password (OTP)") } }
                         .buttonStyle(NeoButtonStyle()).disabled(busy || identifier.count < 5)
                 } else {
                     OTPCodeField(code: $code)
@@ -2552,7 +2556,7 @@ struct ForgotPasswordSheet: View {
                     if !message.isEmpty { Text(message).font(.tp(14)).foregroundStyle(TP.bad) }
                     Button { Task { await reset() } } label: { if busy { ProgressView().tint(.white) } else { Text("Update password") } }
                         .buttonStyle(NeoButtonStyle()).disabled(busy || code.count != 6 || !strong || password != confirm)
-                    Button("Send a new code") { Task { await send() } }.font(.tp(14.5, .medium)).foregroundStyle(TP.violet).frame(maxWidth: .infinity)
+                    Button("Resend OTP") { Task { await send() } }.font(.tp(14.5, .medium)).foregroundStyle(TP.violet).frame(maxWidth: .infinity)
                 }
             }.padding(.horizontal, 22).padding(.bottom, 24)
         }.presentationDetents([.large]).presentationDragIndicator(.visible)
@@ -2576,8 +2580,8 @@ struct ScoringInfoSheet: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                Caption(text: "TraceScore").padding(.top, 28)
-                Text("How the score works").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
+                TraceScoreBadge().padding(.top, 28)
+                Text("How TraceScore works").font(.tp(28, .semibold)).foregroundStyle(TP.ink)
                 if let model {
                     Text(model.summary).font(.tp(15)).foregroundStyle(TP.ink2)
                     VStack(spacing: 0) {
@@ -2617,6 +2621,53 @@ struct ScoringInfoSheet: View {
                     if r.id != rules.last?.id { Divider() }
                 }
             }.padding(.horizontal, 14).background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TP.hair))
+        }
+    }
+}
+
+
+// MARK: - TraceScore brand
+
+/// "TraceScore by trace.pay" lockup shown on every risk report.
+struct TraceScoreBadge: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image("TPMark").resizable().scaledToFit().frame(width: 22, height: 22).clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Text("Trace").font(.tp(15, .bold)).foregroundStyle(TP.ink) + Text("Score").font(.tp(15, .bold)).foregroundStyle(TP.violet)
+            Text("by trace.pay").font(.tp(11.5, .medium)).foregroundStyle(TP.muted)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(Color.white, in: Capsule())
+        .overlay(Capsule().stroke(TP.hair))
+        .shadow(color: TP.violet.opacity(0.12), radius: 10, y: 4)
+    }
+}
+
+/// Floating pixel squares (the logo's corner squares) drifting in 3D behind the score meter.
+struct PixelField: View {
+    var tint: Color = TP.violet
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private struct Pixel { let x, y, size, speed, phase, depth: Double; let lime: Bool }
+    @State private var pixels: [Pixel] = (0..<34).map { i in
+        let r = { (a: Double, b: Double) -> Double in Double.random(in: a...b) }
+        return Pixel(x: r(0, 1), y: r(0, 1), size: r(5, 15), speed: r(0.25, 0.8), phase: r(0, .pi * 2), depth: r(0.3, 1), lime: i % 5 == 0)
+    }
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            Canvas { ctx, size in
+                for p in pixels {
+                    let dx = sin(t * p.speed + p.phase) * 14 * p.depth
+                    let dy = cos(t * p.speed * 0.8 + p.phase) * 18 * p.depth
+                    let s = p.size * (0.6 + 0.4 * p.depth)
+                    let rect = CGRect(x: p.x * size.width + dx - s / 2, y: p.y * size.height + dy - s / 2, width: s, height: s)
+                    let color: Color = p.lime ? TP.lime : (Int(p.phase * 10) % 3 == 0 ? tint : TP.violetLight)
+                    ctx.opacity = 0.18 + 0.5 * p.depth
+                    ctx.fill(Path(roundedRect: rect, cornerRadius: s * 0.22), with: .color(color))
+                }
+            }
+            .rotation3DEffect(.degrees(sin(t * 0.35) * 9), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+            .rotation3DEffect(.degrees(cos(t * 0.28) * 11), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
         }
     }
 }

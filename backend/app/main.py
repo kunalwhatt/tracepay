@@ -30,7 +30,7 @@ from .ids import normalize_tracepay_id, parse_upi
 from . import community
 from .models import ScamReport, ExternalPayment
 
-APP_VERSION = "6.1.1"
+APP_VERSION = "6.1.2"
 OPS_ROLES = ("admin", "analyst", "reviewer")
 app = FastAPI(title="Trace.Pay API", version=APP_VERSION, description="Trace.Pay identity, evidence-aware risk and transaction intelligence API.")
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True, socket_connect_timeout=1, socket_timeout=1)

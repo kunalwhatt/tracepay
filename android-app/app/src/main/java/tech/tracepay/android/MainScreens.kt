@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -36,6 +37,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -458,7 +460,9 @@ fun RiskReportView(r: RiskReport) {
             }
             TText(r.ref, 13.sp, color = TP.muted)
         }
+        TraceScoreBadge()
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            PixelField(Risk.color(r.band), Modifier.fillMaxWidth().height(290.dp))
             ScoreMeter(r.score, r.band)
             Box(Modifier.align(Alignment.TopEnd).size(44.dp).clip(CircleShape).background(Color.White).border(1.dp, TP.hair, CircleShape).clickable { rules = true }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Info, "How the score works", tint = TP.violet)
@@ -524,7 +528,7 @@ fun ScoringInfoSheet(api: TraceApi, onDismiss: () -> Unit) {
     LaunchedEffect(Unit) { try { model = api.scoringModel() } catch (e: Exception) { message = e.message ?: "Couldn't load the scoring rules" } }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color.White, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Caption("TraceScore"); TText("How the score works", 28.sp, FontWeight.SemiBold)
+            TraceScoreBadge(); TText("How TraceScore works", 28.sp, FontWeight.SemiBold)
             val m = model
             if (m == null) { if (message.isNotBlank()) ErrorLine(message) else CircularProgressIndicator(color = TP.violet) }
             else {
@@ -1194,6 +1198,43 @@ fun ReportSheet(api: TraceApi, ref: String, onDismiss: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// TraceScore brand
+// ---------------------------------------------------------------------------------------------
+@Composable
+fun TraceScoreBadge() {
+    Row(Modifier.clip(CircleShape).background(Color.White).border(1.dp, TP.hair, CircleShape).padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+        Image(painterResource(R.drawable.tp_mark), null, Modifier.size(22.dp).clip(RoundedCornerShape(6.dp)))
+        Spacer(Modifier.width(8.dp))
+        Text(androidx.compose.ui.text.buildAnnotatedString {
+            pushStyle(androidx.compose.ui.text.SpanStyle(color = TP.ink, fontWeight = FontWeight.Bold)); append("Trace"); pop()
+            pushStyle(androidx.compose.ui.text.SpanStyle(color = TP.violet, fontWeight = FontWeight.Bold)); append("Score"); pop()
+        }, fontSize = 15.sp)
+        Spacer(Modifier.width(6.dp)); TText("by trace.pay", 11.5.sp, FontWeight.Medium, TP.muted)
+    }
+}
+
+/** Floating pixel squares (the logo's corner squares) drifting in 3D behind the score meter. */
+@Composable
+fun PixelField(tint: Color, modifier: Modifier = Modifier) {
+    val pixels = remember { List(34) { i -> floatArrayOf(Math.random().toFloat(), Math.random().toFloat(), 5f + 10f * Math.random().toFloat(),
+        0.25f + 0.55f * Math.random().toFloat(), (Math.random() * Math.PI * 2).toFloat(), 0.3f + 0.7f * Math.random().toFloat(), if (i % 5 == 0) 1f else 0f) } }
+    val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "pixels")
+    val t by transition.animateFloat(0f, (Math.PI * 200).toFloat(), androidx.compose.animation.core.infiniteRepeatable(tween(600_000, easing = androidx.compose.animation.core.LinearEasing)), label = "t")
+    Canvas(modifier.graphicsLayer { rotationX = sin(t * 0.35f) * 9f; rotationY = cos(t * 0.28f) * 11f; cameraDistance = 14f * density }) {
+        val c = Offset(size.width / 2, size.height / 2); val maxR = size.minDimension * 0.62f
+        pixels.forEach { p ->
+            val dx = sin(t * p[3] + p[4]) * 14.dp.toPx() * p[5]; val dy = cos(t * p[3] * 0.8f + p[4]) * 18.dp.toPx() * p[5]
+            val x = p[0] * size.width + dx; val y = p[1] * size.height + dy
+            val fade = (1f - ((Offset(x, y) - c).getDistance() / maxR)).coerceIn(0f, 1f)
+            val s = p[2].dp.toPx() * (0.6f + 0.4f * p[5])
+            val color = if (p[6] > 0f) TP.lime else if ((p[4] * 10).toInt() % 3 == 0) tint else TP.violetLight
+            drawRoundRect(color.copy(alpha = (0.18f + 0.5f * p[5]) * fade), Offset(x - s / 2, y - s / 2), Size(s, s), androidx.compose.ui.geometry.CornerRadius(s * 0.22f))
         }
     }
 }
