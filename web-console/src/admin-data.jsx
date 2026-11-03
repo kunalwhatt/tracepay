@@ -29,24 +29,24 @@ export default function AccountsData({token, setToast, setError}) {
     catch (e) { setError(e.message); }
   }
   const unlinked = rows.filter(r => !r.mobile && r.role !== 'admin').length;
-  return <section className="ad">
-    <div className="ad-head">
+  return <section className="acx">
+    <div className="acx-head">
       <div><div className="eyebrow">ADMIN</div><h2 className="cirka">Accounts & data</h2>
         <p className="gx-fine">{rows.length} accounts · {unlinked} without a mobile number · <b style={{color: unverified ? '#B42A1B' : 'inherit'}}>{unverified} unverified email{unverified === 1 ? '' : 's'} (can't pay)</b></p></div>
       <button className="np np-white" onClick={() => setLogs(true)}><Trash2 size={16}/> Erase logs</button>
     </div>
-    <div className="ad-tools"><label className="ad-search"><Search size={17}/><input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, email, mobile or Trace.Pay ID"/></label>
+    <div className="acx-tools"><label className="acx-search"><Search size={17}/><input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, email, mobile or Trace.Pay ID"/></label>
       <button className={`np ${onlyUnverified ? 'np-danger' : 'np-white'}`} onClick={() => setOnlyUnverified(v => !v)}><MailWarning size={16}/> Unverified only</button></div>
-    <div className="panel ad-table">
-      <div className="ad-row ad-th"><span>Account</span><span>Mobile</span><span>Activity</span><span></span></div>
-      {shown.map(r => <div className="ad-row" key={r.id}>
-        <span className="ad-who"><i><UserRound size={16}/></i><span><b>{r.name || r.email || r.mobile || `Account ${r.id}`}</b>
+    <div className="panel acx-table">
+      <div className="acx-row acx-th"><span>Account</span><span>Mobile</span><span>Activity</span><span></span></div>
+      {shown.map(r => <div className="acx-row" key={r.id}>
+        <span className="acx-who"><i><UserRound size={16}/></i><span><b>{r.name || r.email || r.mobile || `Account ${r.id}`}</b>
           <small>{[r.vpa_id, r.email, r.role !== 'pilot_user' ? r.role : null].filter(Boolean).join(' · ') || 'No profile yet'}</small>
-          {r.email_verified === true && <em className="ad-ok"><BadgeCheck size={12}/> Email verified</em>}
-          {r.email_verified === false && <em className="ad-no"><MailWarning size={12}/> Email not verified · payments blocked</em>}</span></span>
-        <span>{r.mobile ? <b className="mono">+91 {r.mobile}</b> : <span className="ad-pill">Not linked</span>}</span>
+          {r.email_verified === true && <em className="acx-ok"><BadgeCheck size={12}/> Email verified</em>}
+          {r.email_verified === false && <em className="acx-no"><MailWarning size={12}/> Email not verified · payments blocked</em>}</span></span>
+        <span>{r.mobile ? <b className="mono">+91 {r.mobile}</b> : <span className="acx-pill">Not linked</span>}</span>
         <span className="gx-fine">{r.transfers} payments · {r.external_payments} external · {r.logs} logs</span>
-        <span className="ad-actions">
+        <span className="acx-actions">
           <button className="np np-white np-sm" onClick={() => setMobileFor(r)}><Phone size={14}/> {r.mobile ? 'Change' : 'Link'} mobile</button>
           {r.email_verified !== null && r.email_verified !== undefined && <button className="np np-white np-sm" onClick={() => setVerified(r, !r.email_verified)}>
             {r.email_verified ? 'Unverify' : <><BadgeCheck size={14}/> Mark verified</>}</button>}
@@ -62,8 +62,8 @@ export default function AccountsData({token, setToast, setError}) {
 }
 
 function Modal({title, children, onClose}) {
-  return <div className="ad-scrim" onClick={onClose}><div className="ad-modal" onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
-    <div className="ad-mhead"><h3 className="cirka">{title}</h3><button className="ad-x" onClick={onClose} aria-label="Close"><X size={18}/></button></div>{children}</div></div>;
+  return <div className="acx-scrim" onClick={onClose}><div className="acx-modal" onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
+    <div className="acx-mhead"><h3 className="cirka">{title}</h3><button className="acx-x" onClick={onClose} aria-label="Close"><X size={18}/></button></div>{children}</div></div>;
 }
 
 function LinkMobile({row, token, onClose, onDone, setError}) {
@@ -75,8 +75,8 @@ function LinkMobile({row, token, onClose, onDone, setError}) {
   }
   return <Modal title="Link a mobile number" onClose={onClose}>
     <p className="gx-fine">{row.name || row.email} will be able to sign in with this number and their password. No OTP is sent.</p>
-    <label className="ad-field"><span>+91</span><input autoFocus inputMode="numeric" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d ]/g, ''))} placeholder="10-digit mobile number"/></label>
-    <div className="ad-mfoot"><button className="np np-white" onClick={onClose}>Cancel</button><button className="np" disabled={busy || mobile.replace(/\D/g, '').length !== 10} onClick={save}>{busy ? 'Saving…' : 'Link number'}</button></div>
+    <label className="acx-field"><span>+91</span><input autoFocus inputMode="numeric" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d ]/g, ''))} placeholder="10-digit mobile number"/></label>
+    <div className="acx-mfoot"><button className="np np-white" onClick={onClose}>Cancel</button><button className="np" disabled={busy || mobile.replace(/\D/g, '').length !== 10} onClick={save}>{busy ? 'Saving…' : 'Link number'}</button></div>
   </Modal>;
 }
 
@@ -92,11 +92,11 @@ function Erase({row, token, onClose, onDone, setError}) {
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
   return <Modal title={`Erase data · ${row.name || row.email || row.mobile}`} onClose={onClose}>
-    <div className="ad-warn"><ShieldAlert size={18}/><span>This permanently deletes data. It can't be undone. The action itself is recorded in the audit log.</span></div>
-    <div className="ad-scopes">{SCOPES.map(([k, l, d]) => <label key={k} className={scopes.includes(k) ? 'on' : ''}>
+    <div className="acx-warn"><ShieldAlert size={18}/><span>This permanently deletes data. It can't be undone. The action itself is recorded in the audit log.</span></div>
+    <div className="acx-scopes">{SCOPES.map(([k, l, d]) => <label key={k} className={scopes.includes(k) ? 'on' : ''}>
       <input type="checkbox" checked={scopes.includes(k)} onChange={() => toggle(k)}/><span><b>{l}</b><small>{d}</small></span></label>)}</div>
-    <label className="ad-field"><span>Type ERASE</span><input value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="ERASE"/></label>
-    <div className="ad-mfoot"><button className="np np-white" onClick={onClose}>Cancel</button>
+    <label className="acx-field"><span>Type ERASE</span><input value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="ERASE"/></label>
+    <div className="acx-mfoot"><button className="np np-white" onClick={onClose}>Cancel</button>
       <button className="np np-danger" disabled={busy || confirm !== 'ERASE' || !scopes.length} onClick={erase}>{busy ? 'Erasing…' : 'Erase permanently'}</button></div>
   </Modal>;
 }
@@ -110,9 +110,9 @@ function EraseLogs({token, onClose, onDone, setError}) {
   }
   return <Modal title="Erase activity logs" onClose={onClose}>
     <p className="gx-fine">Deletes audit log entries for all accounts. A record of this erase is kept.</p>
-    <div className="ad-scopes">{[[0, 'All logs'], [30, 'Older than 30 days'], [90, 'Older than 90 days']].map(([v, l]) =>
+    <div className="acx-scopes">{[[0, 'All logs'], [30, 'Older than 30 days'], [90, 'Older than 90 days']].map(([v, l]) =>
       <label key={v} className={days === v ? 'on' : ''}><input type="radio" checked={days === v} onChange={() => setDays(v)}/><span><b>{l}</b></span></label>)}</div>
-    <label className="ad-field"><span>Type ERASE</span><input value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="ERASE"/></label>
-    <div className="ad-mfoot"><button className="np np-white" onClick={onClose}>Cancel</button><button className="np np-danger" disabled={busy || confirm !== 'ERASE'} onClick={erase}>{busy ? 'Erasing…' : 'Erase logs'}</button></div>
+    <label className="acx-field"><span>Type ERASE</span><input value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="ERASE"/></label>
+    <div className="acx-mfoot"><button className="np np-white" onClick={onClose}>Cancel</button><button className="np np-danger" disabled={busy || confirm !== 'ERASE'} onClick={erase}>{busy ? 'Erasing…' : 'Erase logs'}</button></div>
   </Modal>;
 }

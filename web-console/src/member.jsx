@@ -94,8 +94,8 @@ function Check({token, onReport}) {
           {f.points !== 0 && <em style={{color: f.points < 0 ? '#0A9D5A' : '#E03E2D'}}>{f.points > 0 ? '+' : '−'}{Math.abs(f.points)}</em>}</div>)}
         <button className="np np-white" onClick={onReport}><Flag size={15}/> Report this account</button>
       </div></div>}
-    {rules && <div className="ad-scrim" onClick={() => setRules(null)}><div className="ad-modal mp-rules" onClick={e => e.stopPropagation()}>
-      <div className="ad-mhead"><h3 className="cirka">How the score works</h3><button className="ad-x" onClick={() => setRules(null)}><X size={18}/></button></div>
+    {rules && <div className="acx-scrim" onClick={() => setRules(null)}><div className="acx-modal mp-rules" onClick={e => e.stopPropagation()}>
+      <div className="acx-mhead"><h3 className="cirka">How the score works</h3><button className="acx-x" onClick={() => setRules(null)}><X size={18}/></button></div>
       <p className="gx-fine">{rules.summary}</p>
       {rules.bands.map(b => <div className="mp-rule" key={b.range}><b style={{color: band(b.band)[1]}}>{b.range}</b><div><b>{b.label}</b><small>{b.meaning}</small></div></div>)}
       <h4>Payment behaviour</h4>{rules.signals.map(s => <div className="mp-rule" key={s.code}><em>{s.points > 0 ? '+' : ''}{s.points}</em><div><b>{s.label}</b><small>{s.rule}</small></div></div>)}
@@ -117,10 +117,10 @@ function Report({token, done, setError}) {
     <h1 className="cirka mp-h1">Report a scam</h1>
     <p className="gx-fine">Confirmed reports warn everyone who tries to pay that account.</p>
     <div className="mp-form">
-      <label className="ad-field"><span>UPI ID</span><input value={ref} onChange={e => setRef(e.target.value)} placeholder="scammer@ybl"/></label>
+      <label className="acx-field"><span>UPI ID</span><input value={ref} onChange={e => setRef(e.target.value)} placeholder="scammer@ybl"/></label>
       <div className="mp-cats">{CATS.map(([k, l]) => <button key={k} className={cat === k ? 'on' : ''} onClick={() => setCat(k)}>{l}</button>)}</div>
-      <label className="ad-field"><span>Details</span><input value={details} onChange={e => setDetails(e.target.value)} placeholder="What happened (optional)"/></label>
-      <label className="ad-field"><span>Amount lost ₹</span><input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="Optional"/></label>
+      <label className="acx-field"><span>Details</span><input value={details} onChange={e => setDetails(e.target.value)} placeholder="What happened (optional)"/></label>
+      <label className="acx-field"><span>Amount lost ₹</span><input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="Optional"/></label>
       <button className="np np-danger" disabled={busy || !ref.includes('@')} onClick={send}><Flag size={15}/> {busy ? 'Sending…' : 'Send report'}</button>
     </div>
   </>;
